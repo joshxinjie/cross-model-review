@@ -1628,3 +1628,10 @@ def test_only_the_review_process_files_come_from_main(tmp_path):
     cfg = dict(CFG, protected=["docs/METHODOLOGY.md"])
     assert C.always_source("reviews/decisions.md", tmp_path, ROOT, cfg) == ROOT
     assert C.always_source("docs/METHODOLOGY.md", tmp_path, ROOT, cfg) == tmp_path   # the PR's version
+
+
+def test_missing_settings_on_main_give_a_message_not_a_crash():
+    out = G.not_set_up({"issue": {"number": 30}}, {})
+    assert out["run"] == "false" and out["pr"] == "30" and "review/config.yaml" in out["message"]
+    assert G.not_set_up({"pull_request": {"number": 5}}, {})["pr"] == "5"
+    assert G.not_set_up({}, {"pr": "9"})["pr"] == "9" and G.not_set_up({}, {})["pr"] == ""
