@@ -18,7 +18,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..config import ROOT, load_config, protected_paths, schema_path
+from ..config import ROOT, agent_env_extra, load_config, protected_paths, schema_path
 from .base import Completion, Provider
 
 READ_TOOLS = ["Read", "Grep", "Glob"]
@@ -43,10 +43,11 @@ def kill_tree(proc) -> None:
         proc.kill()
 
 
-def agent_env(secret: str, environ=os.environ) -> dict:
+def agent_env(secret: str, environ=os.environ, extra: dict | None = None) -> dict:
     """Only what the CLI needs, plus the subscription token. Never the GitHub token or an API key: an API key would
     switch Claude Code to API billing, and the agent has no business with GitHub write access."""
     env = {k: environ[k] for k in PASS_ENV if k in environ}
+    env.update(extra or {})                       # the project's agent_env settings (never credentials)
     # A token copied from a terminal can pick up a line break where the terminal wrapped it; tokens never contain
     # whitespace, so drop any.
     env[secret] = "".join(environ[secret].split())
@@ -195,6 +196,7 @@ class ClaudeCodeProvider(Provider):
         self.timeout = 60 * limits.get(f"{prefix}agent_timeout_minutes", limits.get("agent_timeout_minutes", 25))
         self.schema = schema or json.loads(schema_path(cwd, cfg).read_text())
         self.protected = protected_paths(cfg)
+        self.extra_env = agent_env_extra(cfg)
         self.run, self.cwd, self.secret, self.mode = run, Path(work_dir or cwd), reviewer["secret"], mode
         self.on_step = None          # set to a callable to receive one line per tool call (live progress)
         self.deadline = None         # one time budget for the run, shared by the retry (PROJ-2026-10-26-2-F2)
@@ -215,10 +217,10 @@ class ClaudeCodeProvider(Provider):
             if self.run is subprocess.run:          # the real CLI: stream, so progress can be shown live
                 i = cmd.index("--output-format")
                 cmd[i + 1: i + 2] = ["stream-json", "--verbose"]
-                return parse_output(json.dumps(stream(cmd, flatten(messages), self.cwd, agent_env(self.secret),
+                return parse_output(json.dumps(stream(cmd, flatten(messages), self.cwd, agent_env(self.secret, extra=self.extra_env),
                                                       budget, self.on_step)))
             proc = self.run(cmd, input=flatten(messages), capture_output=True, text=True, cwd=self.cwd,
-                            timeout=budget, env=agent_env(self.secret))
+                            timeout=budget, env=agent_env(self.secret, extra=self.extra_env))
         finally:
             os.unlink(system_file)
         if proc.returncode != 0 and not proc.stdout.strip().startswith("{"):

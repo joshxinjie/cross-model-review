@@ -1559,3 +1559,72 @@ def test_protected_paths_cover_the_review_files_plus_extras():
 def test_footer_is_optional():
     from review_harness.config import footer
     assert footer({}) == "" and footer(CFG).startswith("_Research")
+
+
+def test_review_on_open_is_opt_in_and_skips_drafts():
+    opened = {"action": "opened", "pull_request": {"number": 7, "draft": False}}
+    assert G.resolve("pull_request", opened, {}, CFG, lambda p: pr_json(), [], TODAY)["run"] == "false"   # off
+    on = copy.deepcopy(CFG)
+    on["triggers"]["review_on_open"] = True
+    out = G.resolve("pull_request", opened, {}, on, lambda p: pr_json(), [], TODAY)
+    assert out["run"] == "true" and out["reviewer"] == "gpt"                   # the author's default reviewer
+    draft = {"action": "opened", "pull_request": {"number": 7, "draft": True}}
+    assert G.resolve("pull_request", draft, {}, on, lambda p: pr_json(), [], TODAY)["run"] == "false"
+    ready = {"action": "ready_for_review", "pull_request": {"number": 7, "draft": False}}
+    assert G.resolve("pull_request", ready, {}, on, lambda p: pr_json(ref="codex/x"), [], TODAY)["reviewer"] == "opus"
+
+
+def test_agent_env_reaches_reviewers_but_never_credentials(tmp_path):
+    from review_harness.config import agent_env_extra
+    cfg = dict(CFG, agent_env={"TRADELAB_PROVIDER": "synthetic"})
+    assert agent_env_extra(cfg) == {"TRADELAB_PROVIDER": "synthetic"}
+    for bad in ({"GH_TOKEN": "x"}, {"OPENAI_API_KEY": "x"}, {"lower": "x"}, {"1X": "x"}):
+        with pytest.raises(ValueError):
+            agent_env_extra(dict(CFG, agent_env=bad))
+    env = CCP.agent_env("CLAUDE_CODE_OAUTH_TOKEN", {"PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "t"},
+                        agent_env_extra(cfg))
+    assert env["TRADELAB_PROVIDER"] == "synthetic"
+    cx = CX.codex_env(tmp_path, tmp_path, {"PATH": "/bin"}, agent_env_extra(cfg))
+    assert cx["TRADELAB_PROVIDER"] == "synthetic"
+
+
+def test_scoped_branches_limit_what_the_author_may_change(tmp_path):
+    from review_harness.config import scope_for
+    cfg = dict(CFG, scopes=[{"branch_prefixes": ["research/"], "allowed": ["strategies/[!_]*/card.yaml", "notes.md"]}])
+    assert scope_for(cfg, "research/week-1") == ["strategies/[!_]*/card.yaml", "notes.md"]
+    assert scope_for(cfg, "feat/x") is None and scope_for(cfg, None) is None
+    work = _repo(tmp_path)                                                   # review/config.yaml + notes.md
+    (work / "strategies" / "a").mkdir(parents=True)
+    (work / "strategies" / "a" / "card.yaml").write_text("x")
+    (work / "engine.py").write_text("y")
+    (work / "notes.md").write_text("edited\n")
+    reverted = RS.revert_protected(work, ["review/"], scope_for(cfg, "research/week-1"))
+    assert sorted(reverted) == ["engine.py"]                                # outside the scope: undone
+    assert (work / "strategies" / "a" / "card.yaml").exists() and (work / "notes.md").read_text() == "edited\n"
+
+
+def test_respond_workflow_checks_the_authors_changes_without_a_token():
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "respond.yml").read_text())
+    steps = {s.get("name"): s for s in wf["jobs"]["respond"]["steps"]}
+    check = steps["Check the author's changes"]
+    assert check["env"]["GITHUB_TOKEN"] == "" and check["env"]["GH_TOKEN"] == ""
+    assert "git checkout -q -- . && git clean -fdq" in check["run"] and "summary.md" in check["run"]
+    names = list(steps)
+    assert names.index("Author answers the findings") < names.index("Check the author's changes") \
+        < names.index("Open the fix PR into the reviewed PR's branch")
+    assert '--head-ref "$HEAD_REF"' in steps["Author answers the findings"]["run"]
+
+
+def test_protected_globs_are_undone_too(tmp_path):
+    work = _repo(tmp_path)
+    (work / "strategies" / "a" / "results").mkdir(parents=True)
+    (work / "strategies" / "a" / "results" / "report.md").write_text("hand edit")
+    (work / "strategies" / "a" / "card.yaml").write_text("ok")
+    assert RS.revert_protected(work, ["review/", "strategies/*/results/"]) == ["strategies/a/results/report.md"]
+    assert (work / "strategies" / "a" / "card.yaml").exists()
+
+
+def test_only_the_review_process_files_come_from_main(tmp_path):
+    cfg = dict(CFG, protected=["docs/METHODOLOGY.md"])
+    assert C.always_source("reviews/decisions.md", tmp_path, ROOT, cfg) == ROOT
+    assert C.always_source("docs/METHODOLOGY.md", tmp_path, ROOT, cfg) == tmp_path   # the PR's version

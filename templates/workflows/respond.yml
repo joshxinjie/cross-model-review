@@ -30,4 +30,5 @@ jobs:
     with:
       harness-ref: main
       install: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
+      # check: "python -m pytest -q"     # run after the author's changes; the result goes in the fix PR
     secrets: inherit

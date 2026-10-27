@@ -33,14 +33,43 @@ def author_schema_path(root: Path, author: dict) -> Path:
     return root / rel if rel else DEFAULT_SCHEMAS["respond_schema"]
 
 
-def protected_paths(cfg: dict) -> list[str]:
+def protected_paths(cfg: dict, extras: bool = True) -> list[str]:
     """The review process's own files: the author may not edit them, and the reviewer's copies come from main.
-    Always the workflows, review/, the decision log's folder and the reviewer instructions, plus `protected`."""
+    Always the workflows, review/, the decision log's folder and the reviewer instructions, plus `protected` (a
+    path, a folder ending in /, or a glob such as strategies/*/results/)."""
     base = [".github/", "review/", str(Path(cfg["decision_log"]).parent) + "/", cfg["instructions"]]
     out = []
-    for p in base + list(cfg.get("protected", [])):
+    for p in base + (list(cfg.get("protected", [])) if extras else []):
         if p not in out:
             out.append(p)
+    return out
+
+
+def scope_for(cfg: dict, head_ref: str | None) -> list[str] | None:
+    """`scopes` in the config: on PRs whose branch starts with one of a scope's branch_prefixes, the author may only
+    change files matching its `allowed` globs when answering a review (others are undone). None: no limit beyond
+    the protected paths."""
+    ref = head_ref or ""
+    for s in cfg.get("scopes") or []:
+        if any(ref.startswith(p) for p in s.get("branch_prefixes", [])):
+            return list(s.get("allowed", []))
+    return None
+
+
+SECRET_LIKE = ("TOKEN", "KEY", "SECRET", "AUTH", "PASSWORD")
+
+
+def agent_env_extra(cfg: dict) -> dict:
+    """`agent_env` in the config: plain settings the reviewer and author need to run the project's tests (e.g.
+    TRADELAB_PROVIDER: synthetic). They are written in the repo, so never credentials; names that look like one are
+    refused."""
+    out = {}
+    for k, v in (cfg.get("agent_env") or {}).items():
+        if not str(k).replace("_", "").isalnum() or not str(k)[:1].isalpha() or str(k) != str(k).upper():
+            raise ValueError(f"agent_env: {k!r} is not an environment variable name")
+        if any(w in str(k) for w in SECRET_LIKE):
+            raise ValueError(f"agent_env: {k!r} looks like a credential; credentials belong in repo secrets")
+        out[str(k)] = str(v)
     return out
 
 

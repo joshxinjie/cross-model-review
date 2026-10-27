@@ -17,7 +17,8 @@ import subprocess
 import sys
 from pathlib import Path
 
-from .config import ROOT, author_schema_path, footer, get_author, load_config, protected_paths, today_sgt
+from .config import (ROOT, author_schema_path, footer, get_author, load_config, protected_paths, scope_for,
+                     today_sgt)
 from .providers.base import Provider
 from .prompt import retry_message
 from .run import report_error
@@ -147,11 +148,19 @@ def in_head(work_dir: Path, path: str) -> bool:
                           capture_output=True).returncode == 0
 
 
-def revert_protected(work_dir: Path, protected: list[str]) -> list[str]:
-    """Undo any change the author made to the review machinery; return what was undone. A rename counts if either
-    side is protected (moving a protected file out would otherwise delete it from the PR), and is undone whole."""
+def revert_protected(work_dir: Path, protected: list[str], allowed: list[str] | None = None) -> list[str]:
+    """Undo any change the author made to the review machinery, or (with `allowed`, the PR's scope) to any file
+    outside the scope's globs; return what was undone. A rename counts if either side is affected (moving a
+    protected file out would otherwise delete it from the PR), and is undone whole."""
+    import fnmatch
+
     def is_protected(path):
-        return path is not None and any(path == p or path.startswith(p) for p in protected)
+        if path is None:
+            return False
+        if any(path == p or path.startswith(p) or fnmatch.fnmatchcase(path, p + ("*" if p.endswith("/") else ""))
+               for p in protected):        # plain prefixes, or globs such as strategies/*/results/
+            return True
+        return allowed is not None and not any(fnmatch.fnmatchcase(path, g) for g in allowed)
 
     def restore(path):
         if in_head(work_dir, path):
@@ -175,7 +184,7 @@ def revert_protected(work_dir: Path, protected: list[str]) -> list[str]:
 # ---- prompt and summary ---------------------------------------------------------------------------------------------
 
 def build_prompt(root: Path, cfg: dict, envelope: dict, pending: list[str], pr: int | None, base: str,
-                 author: dict | None = None) -> tuple[str, str]:
+                 author: dict | None = None, allowed: list[str] | None = None) -> tuple[str, str]:
     author = author or get_author(cfg)
     instructions = (root / author.get("instructions", "review/RESPOND.md")).read_text()
     schema = json.loads(author_schema_path(root, author).read_text())
@@ -191,6 +200,9 @@ def build_prompt(root: Path, cfg: dict, envelope: dict, pending: list[str], pr: 
         target = f"pull request #{pr}" if pr else "the project"
         where = (f"The repository is checked out at the PR's head; `git diff origin/{base}...HEAD` shows the PR's "
                  "changes.\n\n")
+    if allowed is not None:
+        where += ("In this pull request you may only change files matching: " + ", ".join(f"`{g}`" for g in allowed)
+                  + ". Other edits are undone; propose those changes in your reason instead.\n\n")
     user = (f"A reviewer ({envelope['meta']['model']}) reviewed {target}. Its verdict: {envelope['review']['verdict']}. "
             f"Its summary: {envelope['review']['summary']}\n\n" + where +
             f"Findings to answer ({len(findings)}):\n\n{json.dumps(findings, indent=1, ensure_ascii=False)}\n\n"
@@ -216,7 +228,8 @@ def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[
     if already:
         notes.append("already decided earlier, skipped: " + ", ".join(already))
     if reverted:
-        notes.append("edits to the review machinery were undone: " + ", ".join(reverted))
+        notes.append("edits the author may not make (review machinery, or outside this PR's scope) were undone: "
+                     + ", ".join(reverted))
     return (head + f"\n**{tests}** — {cell(t['detail'], 200)}\n\n"
             "<details><summary>Each finding</summary>\n\n| Finding | Decision | Reason |\n|---|---|---|\n"
             + rows + "\n</details>\n\n"
@@ -228,7 +241,8 @@ def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[
 # ---- run ------------------------------------------------------------------------------------------------------------
 
 def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope: dict, review_name: str,
-            pr: int | None, base: str, fixed_in: str, date: str | None = None, author: dict | None = None) -> dict:
+            pr: int | None, base: str, fixed_in: str, date: str | None = None, author: dict | None = None,
+            head_ref: str | None = None) -> dict:
     """Returns {"status": "done" | "nothing" | "invalid", ...}; on "done" the decision log in work_dir is updated."""
     if "invalid" in envelope.get("meta", {}) or not envelope.get("review"):
         raise ValueError(f"{review_name} failed validation; there are no findings to answer")
@@ -240,7 +254,8 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
         return {"status": "nothing", "already": already}
     author = author or get_author(cfg)
     schema = json.loads(author_schema_path(root, author).read_text())
-    system, user = build_prompt(root, cfg, envelope, pending, pr, base, author)
+    allowed = scope_for(cfg, head_ref)
+    system, user = build_prompt(root, cfg, envelope, pending, pr, base, author, allowed)
     messages = [{"role": "user", "content": user}]
     errors, resp = ["not run"], None
     for _ in range(2):                      # one retry: the author's edits stay; only its answer is corrected
@@ -253,7 +268,7 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
         if not errors:
             break
         messages += [{"role": "assistant", "content": c.text}, {"role": "user", "content": retry_message(errors)}]
-    reverted = revert_protected(work_dir, cfg_protected(cfg))
+    reverted = revert_protected(work_dir, cfg_protected(cfg), allowed)
     if errors:
         return {"status": "invalid", "errors": errors, "reverted": reverted}
     rows = decision_rows(resp["responses"], envelope, review_name, row_prefix(log_text, review_name),
@@ -283,6 +298,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--out", help="write the author's decisions (JSON) here")
     ap.add_argument("--error-file")
     ap.add_argument("--author", help="who built the work (review/config.yaml authors; default: default_author)")
+    ap.add_argument("--head-ref", help="the reviewed PR's branch (for review/config.yaml scopes)")
     args = ap.parse_args(argv)
     try:
         from .providers.claude_code import ClaudeCodeProvider
@@ -304,7 +320,7 @@ def main(argv: list[str] | None = None) -> int:
         provider.on_step = progress.step
         progress.start()
         result = respond(ROOT, cfg, provider, work_dir, envelope, name, args.pr, args.base, args.fixed_in,
-                         author=author)
+                         author=author, head_ref=args.head_ref)
     except Exception as e:  # noqa: BLE001 - one-line reason for the PR, full traceback in the log
         if "progress" in locals():
             progress.finish(False, "stopped with an error (reason below)")

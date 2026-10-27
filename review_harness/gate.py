@@ -106,6 +106,13 @@ def resolve(event_name: str, event: dict, inputs: dict, cfg: dict, get_json, arc
                          last_review, wants_force(event["comment"]["body"]))
 
     if event_name == "pull_request":
+        action = event.get("action")
+        if action in ("opened", "reopened", "ready_for_review"):
+            # Automatic review when a PR opens (triggers.review_on_open); drafts wait until marked ready.
+            if not cfg["triggers"].get("review_on_open") or (event.get("pull_request") or {}).get("draft"):
+                return skip()
+            return pr_target(cfg, get_json(f"pulls/{event['pull_request']['number']}"), None, archive_files, today,
+                             last_review)
         if event.get("label", {}).get("name") != cfg["triggers"]["pr_label"]:
             return skip()
         return pr_target(cfg, get_json(f"pulls/{event['pull_request']['number']}"), None, archive_files, today,
@@ -255,7 +262,8 @@ def resolve_respond(event_name: str, event: dict, inputs: dict, cfg: dict, get_j
     author = get_author(cfg) if project and name == project else author_for(cfg, pr["head"]["ref"])
     return {"run": "true", "message": "", "pr": str(number), "review": name, "head_ref": pr["head"]["ref"],
             "head_sha": pr["head"]["sha"], "base": pr["base"]["ref"], "author": author["name"],
-            "provider": author["provider"], "codex": codex_flag(author), "fix_prefix": fix_branch_prefix(author)}
+            "provider": author["provider"], "codex": codex_flag(author), "fix_prefix": fix_branch_prefix(author),
+            "title": pr.get("title", "")}
 
 
 STALE_KEYS = ("pr", "review", "head_sha", "author")

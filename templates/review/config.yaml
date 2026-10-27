@@ -89,6 +89,8 @@ triggers:
   pr_comment_command: /review
   respond_command: /respond
   pr_label: review             # must match the `label` input of the caller workflow
+  review_on_open: false        # true: also review each PR when it opens (add opened, reopened, ready_for_review to
+                               # the caller workflow's pull_request types)
   skip_branches: [reviewer/]   # never review the reviewer's own output (project-review PRs ARE reviewed)
 
 # Scheduled reviews: each cron must also be in the caller workflow's `schedule:` list.
@@ -97,6 +99,14 @@ triggers:
 schedules: []
 #  - {cron: "23 5 6 1,4,7,10 *", kind: project}
 #  - {cron: "23 3 6 * *", kind: pr, branch: "review/{month}"}
+
+# Plain settings the reviewer and author need to run the project's tests, e.g. {TRADELAB_PROVIDER: synthetic}.
+# Written in the repo, so never credentials (names with TOKEN, KEY, SECRET, AUTH or PASSWORD are refused).
+agent_env: {}
+
+# Limit what the author may change when answering a review of PRs on some branches (globs; others are undone).
+scopes: []
+#  - {branch_prefixes: [research/], allowed: ["strategies/*/card.yaml", "docs/IDEAS.md"]}
 
 context:
   pr:
