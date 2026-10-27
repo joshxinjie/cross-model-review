@@ -12,6 +12,7 @@ Example (from a checkout of the PR, with the harness from main on PYTHONPATH):
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -341,6 +342,7 @@ def main(argv: list[str] | None = None) -> int:
     Path(args.summary_out).write_text(result["summary"])
     if args.out:
         Path(args.out).write_text(json.dumps({"review": name, "author": author["model"], "date": today_sgt(),
+                                              "harness": os.environ.get("REVIEW_HARNESS_COMMIT", ""),
                                               "response": result["response"], "reverted": result["reverted"]},
                                              indent=1, ensure_ascii=False) + "\n")
     print(json.dumps({"rows": len(result["rows"]), "reverted": result["reverted"]}))

@@ -72,8 +72,10 @@ The harness reads a repo's settings from its default branch, so land them in two
 
 ## Pinning
 
-The templates call `@main`. To freeze a repo on a known version, use a tag or commit in both `uses: …@<ref>` and
-`harness-ref: <ref>`.
+The templates call `@main`, so every repo gets fixes as soon as they merge here. Within a run, both jobs use the same
+harness commit (the gate resolves the ref once), and every review and response record stores it as `harness`, so a
+result can always be traced to the code that produced it. To freeze a repo on a known version instead, use a tag or
+commit in both `uses: …@<ref>` and `harness-ref: <ref>`.
 
 ## Develop
 

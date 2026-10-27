@@ -1652,3 +1652,13 @@ def test_scopes_match_the_title_too_so_codex_branches_are_covered(tmp_path):
     assert RS.revert_protected(work, ["review/"], scope_for(cfg, "codex/x", "feat: x")) == []
     wf = (REPO / ".github" / "workflows" / "respond.yml").read_text()
     assert '--title "$PR_TITLE"' in wf
+
+
+@pytest.mark.parametrize("workflow", ["review.yml", "respond.yml"])
+def test_both_jobs_run_the_same_harness_commit(workflow):
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / workflow).read_text())
+    gate, work = wf["jobs"]["gate"], [j for j in wf["jobs"].values() if j.get("needs") == "gate"][0]
+    assert gate["outputs"]["harness_sha"] == "${{ steps.harness.outputs.sha }}"
+    fetch = [s for s in work["steps"] if s.get("name") == "Fetch the review harness"][0]
+    assert fetch["env"]["SHA"] == "${{ needs.gate.outputs.harness_sha }}" and "REF" not in fetch["env"]
+    assert "REVIEW_HARNESS_COMMIT=$SHA" in fetch["run"]
