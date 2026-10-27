@@ -40,6 +40,8 @@ The harness reads a repo's settings from its default branch, so land them in two
    never credentials), and `triggers.review_on_open` to review every PR when it opens (then add `opened`,
    `reopened`, `ready_for_review` to the caller's `pull_request` types; drafts wait until marked ready).
    `scopes` limits what the author may change when answering reviews of PRs on some branches.
+   `generated_paths` lists files your own automation commits to PRs (e.g. backtest results): commits touching only
+   those don't make a review stale, so `/respond` can still answer it.
 3. **Adjust the caller workflows**: the `install` command (e.g. `pip install -e ".[dev]"`) so reviewers can run your
    tests, the `label`, and optionally `check` in `respond.yml`: a command run after the author's changes (tests, a PR
    guard) whose result goes in the fix PR, since GitHub runs no checks on PRs a workflow opens.

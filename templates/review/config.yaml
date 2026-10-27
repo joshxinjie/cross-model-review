@@ -104,6 +104,11 @@ schedules: []
 # Written in the repo, so never credentials (names with TOKEN, KEY, SECRET, AUTH or PASSWORD are refused).
 agent_env: {}
 
+# Files the repo's own automation commits to PRs (e.g. backtest results): commits that touch only these don't make a
+# review stale, so /respond can still answer it.
+generated_paths: []
+#  - strategies/*/results/
+
 # Limit what the author may change when answering a review of PRs on some branches (globs; others are undone).
 scopes: []
 #  - {branch_prefixes: [research/], title_prefixes: ["research:"], allowed: ["strategies/*/card.yaml"]}
