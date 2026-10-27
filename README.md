@@ -36,8 +36,10 @@ A reviewer that is the same model as the PR's author is refused.
    what to leave out), `footer`, extra `protected` paths, `schedules`, `agent_env` (plain settings the tests need,
    never credentials), and `triggers.review_on_open` to review every PR when it opens (then add `opened`,
    `reopened`, `ready_for_review` to the caller's `pull_request` types; drafts wait until marked ready).
+   `scopes` limits what the author may change when answering reviews of PRs on some branches.
 3. **Adjust the caller workflows**: the `install` command (e.g. `pip install -e ".[dev]"`) so reviewers can run your
-   tests, and the `label`.
+   tests, the `label`, and optionally `check` in `respond.yml`: a command run after the author's changes (tests, a PR
+   guard) whose result goes in the fix PR, since GitHub runs no checks on PRs a workflow opens.
 4. **Repo settings → Actions → General**: allow GitHub Actions to create pull requests (project reviews and fix
    PRs are pull requests).
 5. **Secrets** (repo → Settings → Secrets and variables → Actions):
