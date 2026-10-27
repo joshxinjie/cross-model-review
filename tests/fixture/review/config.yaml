@@ -107,7 +107,7 @@ agent_env: {}
 
 # Limit what the author may change when answering a review of PRs on some branches (globs; others are undone).
 scopes: []
-#  - {branch_prefixes: [research/], allowed: ["strategies/*/card.yaml", "docs/IDEAS.md"]}
+#  - {branch_prefixes: [research/], title_prefixes: ["research:"], allowed: ["strategies/*/card.yaml"]}
 
 context:
   pr:
