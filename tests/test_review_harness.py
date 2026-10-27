@@ -1664,6 +1664,29 @@ def test_both_jobs_run_the_same_harness_commit(workflow):
     assert "REVIEW_HARNESS_COMMIT=$SHA" in fetch["run"]
 
 
+def test_commits_that_only_add_generated_files_keep_the_review_answerable():
+    cfg = dict(CFG, generated_paths=["strategies/*/results/", "CATALOGUE.md"])
+    env = {"meta": {"commit": "old111", "pr": 7, "reviewer": "opus", "model": "claude-opus-5-5"},
+           "review": {"scope": "pr", "findings": [{"id": "F1"}]}}
+
+    def get_with(files, status="ahead"):
+        def get(path):
+            if path.startswith("pulls?"):
+                return []
+            if path.startswith("compare/"):
+                assert path == "compare/old111...abc123"
+                return {"status": status, "files": [{"filename": f} for f in files]}
+            return pr_json()
+        return get
+    answer = lambda c, g: G.resolve_respond("issue_comment", comment_event("/respond"), {}, c, g,  # noqa: E731
+                                            [f"reviews/{TODAY}-pr7-opus.json"], lambda n: env)
+    assert answer(cfg, get_with(["strategies/a/results/report.md", "CATALOGUE.md"]))["run"] == "true"
+    stale = answer(cfg, get_with(["strategies/a/results/report.md", "tradelab/engine.py"]))
+    assert stale["run"] == "false" and "new commits" in stale["message"]
+    assert answer(cfg, get_with(["CATALOGUE.md"], status="diverged"))["run"] == "false"   # history rewritten
+    assert answer(CFG, get_with(["CATALOGUE.md"]))["run"] == "false"                      # no generated_paths set
+
+
 def test_decision_cells_quote_markdown_links_as_code():
     """A reason quoting a contents line ('[Exercise](#integrative-exercise)') became a broken anchor in
     reviews/decisions.md (agentic-harness-notes #7)."""

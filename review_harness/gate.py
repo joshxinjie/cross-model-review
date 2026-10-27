@@ -24,7 +24,8 @@ from pathlib import Path
 
 import requests
 
-from .config import ROOT, author_for, fix_branch_prefix, get_author, get_reviewer, load_config, today_sgt
+from .config import (ROOT, author_for, fix_branch_prefix, get_author, get_reviewer, load_config, path_matches,
+                     today_sgt)
 
 COMMAND = re.compile(r"^/review(?:[ \t]+(?!force\b)([A-Za-z0-9_-]+))?([ \t]+force)?[ \t]*$")
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
@@ -255,7 +256,8 @@ def resolve_respond(event_name: str, event: dict, inputs: dict, cfg: dict, get_j
             return skip(f"`{name}` reviewed PR #{reviewed_pr}, not #{number}.", pr=str(number))
     reviewed = envelope.get("meta", {}).get("commit")
     # A project review reads main as it was; its PR only adds the record, so there is no head to compare with.
-    if envelope["review"].get("scope") != "project" and reviewed and reviewed != pr["head"]["sha"]:
+    if envelope["review"].get("scope") != "project" and reviewed and reviewed != pr["head"]["sha"] \
+            and not only_generated(cfg, get_json, reviewed, pr["head"]["sha"]):
         return skip(f"PR #{number} has new commits since `{name}` (reviewed {reviewed[:7]}, now "
                     f"{pr['head']['sha'][:7]}); comment `/review` first.", pr=str(number))
     # A project review's PR collects fixes to work by any author: the default author answers it.
@@ -264,6 +266,24 @@ def resolve_respond(event_name: str, event: dict, inputs: dict, cfg: dict, get_j
             "head_sha": pr["head"]["sha"], "base": pr["base"]["ref"], "author": author["name"],
             "provider": author["provider"], "codex": codex_flag(author), "fix_prefix": fix_branch_prefix(author),
             "title": pr.get("title", "")}
+
+
+def only_generated(cfg: dict, get_json, reviewed: str, head: str) -> bool:
+    """True when every commit since the review only touched `generated_paths` (files the repo's own automation
+    writes, e.g. backtest results): the review still describes the code, so it can be answered. Anything else, a
+    rewritten history, or a comparison too large to list, means a fresh review is needed."""
+    patterns = cfg.get("generated_paths") or []
+    if not patterns:
+        return False
+    try:
+        cmp = get_json(f"compare/{reviewed}...{head}")
+    except Exception:  # noqa: BLE001 - can't tell: be safe
+        return False
+    files = cmp.get("files")
+    if cmp.get("status") != "ahead" or files is None or len(files) >= 300:
+        return False
+    names = [f["filename"] for f in files] + [f["previous_filename"] for f in files if f.get("previous_filename")]
+    return bool(names) and all(path_matches(n, patterns) for n in names)
 
 
 STALE_KEYS = ("pr", "review", "head_sha", "author")
