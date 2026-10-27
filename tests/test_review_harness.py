@@ -1559,3 +1559,30 @@ def test_protected_paths_cover_the_review_files_plus_extras():
 def test_footer_is_optional():
     from review_harness.config import footer
     assert footer({}) == "" and footer(CFG).startswith("_Research")
+
+
+def test_review_on_open_is_opt_in_and_skips_drafts():
+    opened = {"action": "opened", "pull_request": {"number": 7, "draft": False}}
+    assert G.resolve("pull_request", opened, {}, CFG, lambda p: pr_json(), [], TODAY)["run"] == "false"   # off
+    on = copy.deepcopy(CFG)
+    on["triggers"]["review_on_open"] = True
+    out = G.resolve("pull_request", opened, {}, on, lambda p: pr_json(), [], TODAY)
+    assert out["run"] == "true" and out["reviewer"] == "gpt"                   # the author's default reviewer
+    draft = {"action": "opened", "pull_request": {"number": 7, "draft": True}}
+    assert G.resolve("pull_request", draft, {}, on, lambda p: pr_json(), [], TODAY)["run"] == "false"
+    ready = {"action": "ready_for_review", "pull_request": {"number": 7, "draft": False}}
+    assert G.resolve("pull_request", ready, {}, on, lambda p: pr_json(ref="codex/x"), [], TODAY)["reviewer"] == "opus"
+
+
+def test_agent_env_reaches_reviewers_but_never_credentials(tmp_path):
+    from review_harness.config import agent_env_extra
+    cfg = dict(CFG, agent_env={"TRADELAB_PROVIDER": "synthetic"})
+    assert agent_env_extra(cfg) == {"TRADELAB_PROVIDER": "synthetic"}
+    for bad in ({"GH_TOKEN": "x"}, {"OPENAI_API_KEY": "x"}, {"lower": "x"}, {"1X": "x"}):
+        with pytest.raises(ValueError):
+            agent_env_extra(dict(CFG, agent_env=bad))
+    env = CCP.agent_env("CLAUDE_CODE_OAUTH_TOKEN", {"PATH": "/bin", "CLAUDE_CODE_OAUTH_TOKEN": "t"},
+                        agent_env_extra(cfg))
+    assert env["TRADELAB_PROVIDER"] == "synthetic"
+    cx = CX.codex_env(tmp_path, tmp_path, {"PATH": "/bin"}, agent_env_extra(cfg))
+    assert cx["TRADELAB_PROVIDER"] == "synthetic"

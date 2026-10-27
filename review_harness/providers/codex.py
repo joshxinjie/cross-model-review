@@ -31,7 +31,7 @@ import threading
 import time
 from pathlib import Path
 
-from ..config import ROOT, load_config, schema_path
+from ..config import ROOT, agent_env_extra, load_config, schema_path
 from .base import Completion, Provider
 from .claude_code import flatten, kill_tree
 
@@ -176,9 +176,11 @@ def build_command(binary: str, model: str, effort: str | None, schema_file: str,
     return cmd + ["-"]                                   # the prompt comes on stdin
 
 
-def codex_env(home: Path, tmp: Path, environ=os.environ) -> dict:
-    """Only what the CLI needs. No GitHub token, Claude token, API key, or the login secret itself."""
+def codex_env(home: Path, tmp: Path, environ=os.environ, extra: dict | None = None) -> dict:
+    """Only what the CLI needs, plus the project's agent_env settings. No GitHub token, Claude token, API key, or
+    the login secret itself."""
     env = {k: environ[k] for k in PASS_ENV if k in environ and k != "TMPDIR"}
+    env.update(extra or {})
     env.update(HOME=str(home), CODEX_HOME=str(home), TMPDIR=str(tmp), PYTHONDONTWRITEBYTECODE="1")
     return env
 
@@ -222,6 +224,7 @@ class CodexProvider(Provider):
         self.deadline, self.mode = None, mode
         build_command("x", "m", None, "s", "o", "w", mode)        # rejects an unknown mode early
         self.schema = schema or json.loads(schema_path(cwd, cfg).read_text())
+        self.extra_env = agent_env_extra(cfg)
         self.binary, self.cwd, self.environ = binary, Path(work_dir or cwd), environ
         self.out_path = environ.get("CODEX_AUTH_OUT")
         self.on_step = None
@@ -266,7 +269,7 @@ class CodexProvider(Provider):
             try:
                 result = self._run(build_command(self.binary, self.model, self.effort, str(schema_file),
                                                  str(last_file), str(work), self.mode, extra),
-                                   prompt, codex_env(home, tmp, self.environ), current_secrets, work,
+                                   prompt, codex_env(home, tmp, self.environ, self.extra_env), current_secrets, work,
                                    budget)
             finally:
                 note = self._save_refreshed(auth_file, seeded)

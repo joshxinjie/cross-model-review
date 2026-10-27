@@ -44,6 +44,23 @@ def protected_paths(cfg: dict) -> list[str]:
     return out
 
 
+SECRET_LIKE = ("TOKEN", "KEY", "SECRET", "AUTH", "PASSWORD")
+
+
+def agent_env_extra(cfg: dict) -> dict:
+    """`agent_env` in the config: plain settings the reviewer and author need to run the project's tests (e.g.
+    TRADELAB_PROVIDER: synthetic). They are written in the repo, so never credentials; names that look like one are
+    refused."""
+    out = {}
+    for k, v in (cfg.get("agent_env") or {}).items():
+        if not str(k).replace("_", "").isalnum() or not str(k)[:1].isalpha() or str(k) != str(k).upper():
+            raise ValueError(f"agent_env: {k!r} is not an environment variable name")
+        if any(w in str(k) for w in SECRET_LIKE):
+            raise ValueError(f"agent_env: {k!r} looks like a credential; credentials belong in repo secrets")
+        out[str(k)] = str(v)
+    return out
+
+
 def footer(cfg: dict) -> str:
     """Optional closing line on every comment the harness posts (e.g. a disclaimer)."""
     return cfg.get("footer") or ""

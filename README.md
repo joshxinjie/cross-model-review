@@ -33,7 +33,9 @@ A reviewer that is the same model as the PR's author is refused.
      own checks)
    - `templates/reviews/decisions.md` → `reviews/`
 2. **Adjust `review/config.yaml`**: `context` (which files every review reads, which areas a project review covers,
-   what to leave out), `footer`, extra `protected` paths, `schedules`.
+   what to leave out), `footer`, extra `protected` paths, `schedules`, `agent_env` (plain settings the tests need,
+   never credentials), and `triggers.review_on_open` to review every PR when it opens (then add `opened`,
+   `reopened`, `ready_for_review` to the caller's `pull_request` types; drafts wait until marked ready).
 3. **Adjust the caller workflows**: the `install` command (e.g. `pip install -e ".[dev]"`) so reviewers can run your
    tests, and the `label`.
 4. **Repo settings → Actions → General**: allow GitHub Actions to create pull requests (project reviews and fix
