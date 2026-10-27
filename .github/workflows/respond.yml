@@ -46,6 +46,7 @@ jobs:
     timeout-minutes: 10
     outputs:
       run: ${{ steps.gate.outputs.run }}
+      harness_sha: ${{ steps.harness.outputs.sha }}
       pr: ${{ steps.gate.outputs.pr }}
       review: ${{ steps.gate.outputs.review }}
       base: ${{ steps.gate.outputs.base }}
@@ -71,6 +72,7 @@ jobs:
           python-version: ${{ inputs.python-version }}
 
       - name: Fetch the review harness
+        id: harness
         env:
           REPO: ${{ inputs.harness-repo }}
           REF: ${{ inputs.harness-ref }}
@@ -78,6 +80,9 @@ jobs:
           git init -q "$RUNNER_TEMP/harness"
           git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$REF"
           git -C "$RUNNER_TEMP/harness" checkout -q FETCH_HEAD
+          # The work job runs this exact commit, even if the ref moves while it waits in the queue; it is also
+          # recorded in every review and response record.
+          echo "sha=$(git -C "$RUNNER_TEMP/harness" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           echo "PYTHONPATH=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
 
       - name: Install harness dependencies
@@ -128,12 +133,13 @@ jobs:
       - name: Fetch the review harness
         env:
           REPO: ${{ inputs.harness-repo }}
-          REF: ${{ inputs.harness-ref }}
+          SHA: ${{ needs.gate.outputs.harness_sha }}       # the commit the gate ran, not the ref again
         run: |
           git init -q "$RUNNER_TEMP/harness"
-          git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$REF"
+          git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$SHA"
           git -C "$RUNNER_TEMP/harness" checkout -q FETCH_HEAD
           echo "PYTHONPATH=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
+          echo "REVIEW_HARNESS_COMMIT=$SHA" >> "$GITHUB_ENV"
 
       - name: Install harness dependencies
         run: pip install pyyaml requests

@@ -7,6 +7,7 @@ Examples (from a project's checkout, with this repository on PYTHONPATH):
 
 import argparse
 import json
+import os
 import re
 import subprocess
 import sys
@@ -152,6 +153,8 @@ def _main(args) -> int:
         progress.finish(True, f"verdict `{envelope['review']['verdict']}`, "
                               f"{len(envelope['review']['findings'])} findings; the review follows")
     envelope["meta"]["pr"] = args.pr
+    if os.environ.get("REVIEW_HARNESS_COMMIT"):         # which harness ran the review (set by the workflow)
+        envelope["meta"]["harness"] = os.environ["REVIEW_HARNESS_COMMIT"]
     envelope["meta"]["commit"] = subprocess.run(["git", "-C", str(repo), "rev-parse", args.head if args.scope == "pr"
                                                  else "HEAD"], capture_output=True, text=True).stdout.strip()
     from .gate import archive_listing
