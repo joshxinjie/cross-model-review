@@ -355,10 +355,20 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add -A
           git commit -q -m "Author response to cross-model review ${REVIEW%.json}" \
-            -m "Decisions logged in reviews/decisions.md. Research only, not investment advice."
+            -m "Decisions logged in reviews/decisions.md."
           git push -q origin "$BRANCH"
-          url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="Author response to the review of #$PR" \
-                -f head="$BRANCH" -f base="$HEAD_REF" -F body=@"$RUNNER_TEMP/summary.md" --jq .html_url)
+          echo "$BRANCH" > "$RUNNER_TEMP/pushed_branch"
+          # Opening a PR needs "Allow GitHub Actions to create and approve pull requests" in the repo's settings.
+          # Keep GitHub's answer so the failure comment can show it.
+          if ! url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="Author response to the review of #$PR" \
+                -f head="$BRANCH" -f base="$HEAD_REF" -F body=@"$RUNNER_TEMP/summary.md" --jq .html_url \
+                2> "$RUNNER_TEMP/gh_err.txt"); then
+            { echo "Opening the fix PR failed: $(head -c 500 "$RUNNER_TEMP/gh_err.txt")"
+              echo "If it says Actions may not create pull requests: Settings -> Actions -> General -> Workflow"
+              echo "permissions -> allow GitHub Actions to create and approve pull requests."; } \
+              > "$RUNNER_TEMP/respond_error.txt"
+            exit 1
+          fi
           # The decision rows were written before the PR existed; record its number in "Fixed in".
           num="${url##*/}"
           echo "$url" > "$RUNNER_TEMP/fix_pr_url"
@@ -373,7 +383,7 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/comment.md"
 
       - name: Archive the response record
-        if: steps.respond.outputs.code == '0'
+        if: ${{ !cancelled() && steps.respond.outputs.code == '0' }}       # kept even if opening the fix PR failed
         env:
           REVIEW: ${{ needs.gate.outputs.review }}
         run: |
@@ -399,12 +409,17 @@ jobs:
         if: failure() && needs.gate.outputs.pr != ''
         env:
           PR: ${{ needs.gate.outputs.pr }}
+          HEAD_REF: ${{ needs.gate.outputs.head_ref }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          COMPARE: ${{ github.server_url }}/${{ github.repository }}/compare
         run: |
           reason="see the run log"
           if [ -s "$RUNNER_TEMP/respond_error.txt" ]; then reason=$(head -c 800 "$RUNNER_TEMP/respond_error.txt"); fi
           if [ -s "$RUNNER_TEMP/fix_pr_url" ]; then
             outcome="the fix PR was opened ($(cat "$RUNNER_TEMP/fix_pr_url")) but a later step failed"
+          elif [ -s "$RUNNER_TEMP/pushed_branch" ]; then
+            b=$(cat "$RUNNER_TEMP/pushed_branch")
+            outcome="the author's changes and decisions were pushed to \`$b\`, but no PR was opened (its decision rows still name the branch in Fixed in). Open one into this PR's branch: $COMPARE/$HEAD_REF...$b"
           else
             outcome="nothing was changed"
           fi

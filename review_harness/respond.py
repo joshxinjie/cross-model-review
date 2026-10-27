@@ -36,10 +36,30 @@ ICON = {"accept": "✅", "modify": "🔧", "reject": "✋", "defer": "⏳"}
 FINDING_CELL = re.compile(r"^(F\d{1,2})\b")
 
 
+# A Markdown link or image outside a code span: `[text](target)` or `![alt](src)`.
+MD_LINK = re.compile(r"!?\[[^\]\n]*\]\([^)\s]*\)")
+CODE_SPAN = re.compile(r"`[^`]*`")
+
+
+def quote_links(text: str) -> str:
+    """Show Markdown links a model quotes as code. In a table in reviews/ they would resolve against the wrong folder
+    and read as broken links (a quoted contents line `[Answer](#worked-answer)`, a path such as `../src/x.py`)."""
+    out, pos = [], 0
+    for span in CODE_SPAN.finditer(text):                # leave existing code spans alone
+        out.append(MD_LINK.sub(lambda m: f"`{m.group(0)}`", text[pos:span.start()]))
+        out.append(span.group(0))
+        pos = span.end()
+    out.append(MD_LINK.sub(lambda m: f"`{m.group(0)}`", text[pos:]))
+    return "".join(out)
+
+
 def cell(text: str, limit: int = 300) -> str:
-    """One table cell: no pipes or line breaks, trimmed."""
+    """One table cell: no pipes or line breaks, trimmed, quoted links shown as code. Cut first, so a cut never splits
+    a quoted link and leaves an unmatched backtick."""
     text = " ".join(str(text).split()).replace("|", "/")
-    return text if len(text) <= limit else text[: limit - 1] + "…"
+    if len(text) > limit:
+        text = text[: limit - 1] + "…"
+    return quote_links(text)
 
 
 def table_rows(log_text: str) -> list[list[str]]:
