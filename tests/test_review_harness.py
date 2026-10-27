@@ -1662,3 +1662,26 @@ def test_both_jobs_run_the_same_harness_commit(workflow):
     fetch = [s for s in work["steps"] if s.get("name") == "Fetch the review harness"][0]
     assert fetch["env"]["SHA"] == "${{ needs.gate.outputs.harness_sha }}" and "REF" not in fetch["env"]
     assert "REVIEW_HARNESS_COMMIT=$SHA" in fetch["run"]
+
+
+def test_commits_that_only_add_generated_files_keep_the_review_answerable():
+    cfg = dict(CFG, generated_paths=["strategies/*/results/", "CATALOGUE.md"])
+    env = {"meta": {"commit": "old111", "pr": 7, "reviewer": "opus", "model": "claude-opus-5-5"},
+           "review": {"scope": "pr", "findings": [{"id": "F1"}]}}
+
+    def get_with(files, status="ahead"):
+        def get(path):
+            if path.startswith("pulls?"):
+                return []
+            if path.startswith("compare/"):
+                assert path == "compare/old111...abc123"
+                return {"status": status, "files": [{"filename": f} for f in files]}
+            return pr_json()
+        return get
+    answer = lambda c, g: G.resolve_respond("issue_comment", comment_event("/respond"), {}, c, g,  # noqa: E731
+                                            [f"reviews/{TODAY}-pr7-opus.json"], lambda n: env)
+    assert answer(cfg, get_with(["strategies/a/results/report.md", "CATALOGUE.md"]))["run"] == "true"
+    stale = answer(cfg, get_with(["strategies/a/results/report.md", "tradelab/engine.py"]))
+    assert stale["run"] == "false" and "new commits" in stale["message"]
+    assert answer(cfg, get_with(["CATALOGUE.md"], status="diverged"))["run"] == "false"   # history rewritten
+    assert answer(CFG, get_with(["CATALOGUE.md"]))["run"] == "false"                      # no generated_paths set

@@ -58,6 +58,13 @@ def scope_for(cfg: dict, head_ref: str | None, title: str | None = None) -> list
     return None
 
 
+def path_matches(path: str, patterns) -> bool:
+    """A path, a folder ending in /, or a glob such as strategies/*/results/ (the same rules as `protected`)."""
+    import fnmatch
+    return any(path == p or path.startswith(p) or fnmatch.fnmatchcase(path, p + ("*" if p.endswith("/") else ""))
+               for p in patterns)
+
+
 SECRET_LIKE = ("TOKEN", "KEY", "SECRET", "AUTH", "PASSWORD")
 
 
