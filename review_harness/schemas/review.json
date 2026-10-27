@@ -1,0 +1,58 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/joshxinjie/cross-model-review/review_harness/schemas/review.json",
+  "title": "Cross-model review",
+  "description": "Output every reviewer model must return. See REVIEW.md for meanings.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "scope", "verdict", "summary", "findings"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "scope": {"enum": ["pr", "project"]},
+    "verdict": {
+      "enum": ["approve", "approve_with_nits", "changes_needed", "healthy", "attention", "at_risk"],
+      "description": "pr scope: approve | approve_with_nits | changes_needed. project scope: healthy | attention | at_risk."
+    },
+    "summary": {
+      "type": "string",
+      "maxLength": 700,
+      "description": "Phone-sized: the verdict, then the top three findings in one line each."
+    },
+    "findings": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {"$ref": "#/$defs/finding"}
+    }
+  },
+  "$defs": {
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "severity", "area", "title", "file", "claim", "evidence", "proposed_change",
+                   "verified_by", "confidence"],
+      "properties": {
+        "id": {"type": "string", "pattern": "^F[0-9]{1,2}$"},
+        "severity": {"enum": ["critical", "major", "minor", "nit", "question"]},
+        "area": {"enum": ["goal_fit", "research", "data", "timing", "evaluation", "code", "docs", "process"]},
+        "checklist_item": {
+          "type": "string",
+          "description": "Section and item of evaluation/REVIEW_CHECKLIST.md, when the finding applies one."
+        },
+        "title": {"type": "string", "maxLength": 120},
+        "file": {"type": "string", "description": "Repo-relative path, or a document path plus section."},
+        "line_start": {"type": "integer", "minimum": 1},
+        "line_end": {"type": "integer", "minimum": 1},
+        "claim": {"type": "string", "description": "What is wrong or unclear."},
+        "evidence": {"type": "string", "description": "The code, number or source that shows it. URLs for outside facts."},
+        "proposed_change": {"type": "string", "description": "What to change and how to test it."},
+        "verified_by": {"enum": ["ran_code", "read_code", "read_docs", "external_source"]},
+        "confidence": {"type": "number", "minimum": 0, "maximum": 1},
+        "related_decision": {
+          "type": "string",
+          "pattern": "^(PR[0-9]+|PROJ-[0-9]{4}-[0-9]{2}-[0-9]{2})(-[0-9]+)?-F[0-9]{1,2}$",
+          "description": "A past decision in reviews/decisions.md this finding revisits; state the new evidence."
+        }
+      }
+    }
+  }
+}

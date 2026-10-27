@@ -1,0 +1,366 @@
+name: Cross-model review response (reusable)
+
+# Called from a project's own workflow (templates/respond.yml) on `/respond`. The model that built the PR answers
+# the latest review's findings under the project's review/RESPOND.md: it edits a separate work tree, and its fixes
+# and decisions arrive as a pull request into the reviewed PR's branch. Nothing counts until the owner merges it.
+#
+# Layout on the runner:
+#   $GITHUB_WORKSPACE        the project's main, trusted: config, instructions, decision log (REVIEW_PROJECT_ROOT)
+#   $RUNNER_TEMP/work        the PR's head, which the author edits
+#   $RUNNER_TEMP/harness     this repository at `harness-ref` (PYTHONPATH)
+
+on:
+  workflow_call:
+    inputs:
+      harness-ref:
+        type: string
+        default: main
+      harness-repo:
+        type: string
+        default: joshxinjie/cross-model-review
+      python-version:
+        type: string
+        default: "3.12"
+      install:
+        description: "Shell command that installs the project's dependencies, run in the PR's work tree"
+        type: string
+        default: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
+      codex-version:
+        type: string
+        default: "0.164.0"
+
+jobs:
+  gate:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/respond'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      pr: ${{ steps.gate.outputs.pr }}
+      review: ${{ steps.gate.outputs.review }}
+      base: ${{ steps.gate.outputs.base }}
+      head_ref: ${{ steps.gate.outputs.head_ref }}
+      author: ${{ steps.gate.outputs.author }}
+      provider: ${{ steps.gate.outputs.provider }}
+      codex: ${{ steps.gate.outputs.codex }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      fix_prefix: ${{ steps.gate.outputs.fix_prefix }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REVIEW_PROJECT_ROOT: ${{ github.workspace }}     # config and instructions come from main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Fetch the review harness
+        env:
+          REPO: ${{ inputs.harness-repo }}
+          REF: ${{ inputs.harness-ref }}
+        run: |
+          git init -q "$RUNNER_TEMP/harness"
+          git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$REF"
+          git -C "$RUNNER_TEMP/harness" checkout -q FETCH_HEAD
+          echo "PYTHONPATH=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
+
+      - name: Install harness dependencies
+        run: pip install pyyaml requests
+
+      - name: Fetch the review archive
+        run: git fetch -q origin reviewer/archive:refs/remotes/origin/reviewer/archive || echo "No archive branch yet"
+
+      - name: Decide what to answer
+        id: gate
+        run: python -m review_harness.gate --respond
+
+      - name: Explain why not
+        if: steps.gate.outputs.run == 'false' && steps.gate.outputs.message != '' && steps.gate.outputs.pr != ''
+        env:
+          PR: ${{ steps.gate.outputs.pr }}
+          MSG: ${{ steps.gate.outputs.message }}
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="ℹ️ $MSG"
+
+      - name: Acknowledge the command
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'issue_comment'
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes
+
+  respond:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    # The PR's author answers: Claude Code for Claude-built PRs, Codex for codex/ branches. Runs on the shared ChatGPT
+    # login queue with every other Codex run (its refresh token rotates); others queue per PR.
+    concurrency:
+      group: ${{ needs.gate.outputs.codex == 'true' && 'cross-model-review-codex-login' || format('cross-model-respond-{0}', needs.gate.outputs.pr) }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REVIEW_PROJECT_ROOT: ${{ github.workspace }}     # config and instructions come from main
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Fetch the review harness
+        env:
+          REPO: ${{ inputs.harness-repo }}
+          REF: ${{ inputs.harness-ref }}
+        run: |
+          git init -q "$RUNNER_TEMP/harness"
+          git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$REF"
+          git -C "$RUNNER_TEMP/harness" checkout -q FETCH_HEAD
+          echo "PYTHONPATH=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
+
+      - name: Install harness dependencies
+        run: pip install pyyaml requests
+
+      - name: Fetch the review archive
+        run: git fetch -q origin reviewer/archive:refs/remotes/origin/reviewer/archive || echo "No archive branch yet"
+
+      - name: Check again now that this job holds the queue
+        # The first gate ran before the queue wait: another response may have opened a fix PR since, or the PR may
+        # have new commits nobody reviewed. Stop unless everything still matches.
+        id: recheck
+        env:
+          EXPECT_PR: ${{ needs.gate.outputs.pr }}
+          EXPECT_REVIEW: ${{ needs.gate.outputs.review }}
+          EXPECT_HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+          EXPECT_AUTHOR: ${{ needs.gate.outputs.author }}
+        run: python -m review_harness.gate --respond --recheck
+
+      - name: Explain why it stopped
+        if: steps.recheck.outputs.run == 'false' && steps.recheck.outputs.message != ''
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          MSG: ${{ steps.recheck.outputs.message }}
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="ℹ️ $MSG"
+
+      - name: Check out the PR in a separate work tree
+        id: work
+        if: steps.recheck.outputs.run == 'true'
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          REVIEW: ${{ needs.gate.outputs.review }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+          FIX_PREFIX: ${{ needs.gate.outputs.fix_prefix }}   # respond/ or respond/codex/: keeps the author
+        run: |
+          git fetch -q origin "pull/$PR/head:pr-head"
+          if [ "$(git rev-parse pr-head)" != "$HEAD_SHA" ]; then
+            echo "::error::PR #$PR moved after the check; not answering a review of a different commit"
+            exit 1
+          fi
+          branch="${FIX_PREFIX}pr$PR-$(TZ=Asia/Singapore date +%F)"
+          k=2
+          while git ls-remote --exit-code --heads origin "$branch" >/dev/null; do
+            branch="${FIX_PREFIX}pr$PR-$(TZ=Asia/Singapore date +%F)-$k"; k=$((k + 1))
+          done
+          git worktree add -q -b "$branch" "$RUNNER_TEMP/work" pr-head
+          git show "origin/reviewer/archive:reviews/$REVIEW" > "$RUNNER_TEMP/review.json"
+          echo "branch=$branch" >> "$GITHUB_OUTPUT"
+          # No PR code has run yet; from here on none finds a credential (the work tree shares this .git/config).
+          # The push steps restore one with `gh auth setup-git`.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+
+      - name: Install the author's CLI and the PR's dependencies
+        if: steps.recheck.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ""                 # the PR's requirements may run build code: no GitHub token here
+          GH_TOKEN: ""
+          PROVIDER: ${{ needs.gate.outputs.provider }}
+        run: |
+          if [ "$PROVIDER" = codex ]; then
+            npm install -g "@openai/codex@${{ inputs.codex-version }}"
+            codex --version
+          else
+            npm install -g @anthropic-ai/claude-code
+            claude --version
+          fi
+          cd "$RUNNER_TEMP/work"
+          ${{ inputs.install }}
+
+      - name: Let Codex's sandbox start (Codex author)
+        if: steps.recheck.outputs.run == 'true' && needs.gate.outputs.provider == 'codex'
+        env:
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: |
+          # Codex runs each command inside bubblewrap, which needs unprivileged user namespaces; Ubuntu 24.04 runners
+          # block those through AppArmor, so in the first live review every command failed before a shell started.
+          # Allow them on this throwaway runner. Codex's own rules still apply (no network, .git read-only).
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # Check with the review's own sandbox settings: an author that cannot run commands cannot test its fixes.
+          probe="$RUNNER_TEMP/sandbox-probe"
+          mkdir -p "$probe" && cd "$probe"
+          if codex sandbox -c 'sandbox_mode="workspace-write"' -c sandbox_workspace_write.network_access=false \
+               -- python -c 'open("probe.txt", "w").write("ok"); print("Codex sandbox OK: commands and writes work")'; then
+            :
+          else
+            echo "::warning::Codex's sandbox could not start, so Codex cannot run the tests or apply fixes"
+          fi
+
+
+      - name: Hand the progress-comment token to the harness in a file
+        # The harness reads and deletes this file before it starts the author, so the author (which runs Python and
+        # can read other processes' environments) never finds a GitHub token in its parent processes.
+        if: steps.recheck.outputs.run == 'true'
+        run: |
+          umask 077
+          printf '%s' "$GITHUB_TOKEN" > "$RUNNER_TEMP/progress_token"
+
+      - name: Author answers the findings
+        id: respond
+        if: steps.recheck.outputs.run == 'true'
+        env:
+          GITHUB_TOKEN: ""                               # no GitHub token reaches the author
+          GH_TOKEN: ""
+          PROGRESS_TOKEN_FILE: ${{ runner.temp }}/progress_token
+          PROGRESS_PR: ${{ needs.gate.outputs.pr }}      # live progress comment on the reviewed PR
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.gate.outputs.provider == 'claude-code' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          CODEX_AUTH_JSON: ${{ needs.gate.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
+          CODEX_AUTH_OUT: ${{ runner.temp }}/codex_auth_refreshed.json  # written only if Codex refreshed it
+          AUTHOR: ${{ needs.gate.outputs.author }}
+          PR: ${{ needs.gate.outputs.pr }}
+          BASE: ${{ needs.gate.outputs.base }}
+          REVIEW: ${{ needs.gate.outputs.review }}
+          BRANCH: ${{ steps.work.outputs.branch }}
+        run: |
+          # The work tree shares this checkout's .git/config, which holds actions/checkout's credential: remove it
+          # before the author starts; the push steps below restore one with `gh auth setup-git`.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          set +e
+          python -m review_harness.respond --work-dir "$RUNNER_TEMP/work" --review-file "$RUNNER_TEMP/review.json" \
+            --review-name "$REVIEW" --pr "$PR" --base "$BASE" --fixed-in "$BRANCH" \
+            --summary-out "$RUNNER_TEMP/summary.md" --out "$RUNNER_TEMP/response.json" \
+            --author "$AUTHOR" --error-file "$RUNNER_TEMP/respond_error.txt"
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          if [ "$code" = 3 ]; then exit 0; fi     # nothing left to answer: reported below
+          exit $code
+
+      - name: Save the refreshed Codex login
+        # Codex refreshes its ChatGPT tokens about every 8 days; the new file must replace the secret, or the next run
+        # starts from a stale refresh token. GITHUB_TOKEN cannot write secrets, hence SECRETS_WRITE_TOKEN (a
+        # fine-grained token with this repo's "Secrets: read and write" permission only).
+        if: always() && needs.gate.outputs.provider == 'codex'
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_WRITE_TOKEN }}
+          PR: ${{ needs.gate.outputs.pr }}
+          POST_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          f="$RUNNER_TEMP/codex_auth_refreshed.json"
+          [ -s "$f" ] || { echo "Codex login unchanged"; exit 0; }
+          python3 - "$f" <<'PY'
+          import json, sys
+          def walk(v):
+              if isinstance(v, dict):
+                  for x in v.values(): walk(x)
+              elif isinstance(v, list):
+                  for x in v: walk(x)
+              elif isinstance(v, str) and len(v) >= 20:
+                  print(f"::add-mask::{v}")
+          walk(json.load(open(sys.argv[1])))
+          PY
+          if [ -n "$GH_TOKEN" ] && gh secret set CODEX_AUTH_JSON --repo "$GITHUB_REPOSITORY" < "$f"; then
+            echo "Saved the refreshed Codex login"
+          else
+            msg="⚠️ Codex refreshed its ChatGPT login but it could not be saved (is SECRETS_WRITE_TOKEN set?). The next Codex run may fail until the login is re-seeded."
+            echo "::warning::$msg"
+            if [ -n "$PR" ]; then GH_TOKEN="$POST_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$msg"; fi
+          fi
+          rm -f "$f"
+
+      - name: Nothing to answer
+        if: steps.respond.outputs.code == '3'
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/summary.md"
+
+      - name: Open the fix PR into the reviewed PR's branch
+        if: steps.respond.outputs.code == '0'
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          HEAD_REF: ${{ needs.gate.outputs.head_ref }}
+          REVIEW: ${{ needs.gate.outputs.review }}
+          BRANCH: ${{ steps.work.outputs.branch }}
+        run: |
+          gh auth setup-git
+          cd "$RUNNER_TEMP/work"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Author response to cross-model review ${REVIEW%.json}" \
+            -m "Decisions logged in reviews/decisions.md. Research only, not investment advice."
+          git push -q origin "$BRANCH"
+          url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="Author response to the review of #$PR" \
+                -f head="$BRANCH" -f base="$HEAD_REF" -F body=@"$RUNNER_TEMP/summary.md" --jq .html_url)
+          # The decision rows were written before the PR existed; record its number in "Fixed in".
+          num="${url##*/}"
+          echo "$url" > "$RUNNER_TEMP/fix_pr_url"
+          sed -i "s@| ${BRANCH} |@| #${num} |@g" reviews/decisions.md   # '@' as delimiter: the text contains '#'
+
+          if ! git diff --quiet -- reviews/decisions.md; then
+            git commit -q -am "Decision log: fixes are in #${num}"
+            git push -q origin "$BRANCH"
+          fi
+          printf '%s\n\n%s\n' "Author response ready for your decision: $url" \
+            "$(head -c 1500 "$RUNNER_TEMP/summary.md")" > "$RUNNER_TEMP/comment.md"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/comment.md"
+
+      - name: Archive the response record
+        if: steps.respond.outputs.code == '0'
+        env:
+          REVIEW: ${{ needs.gate.outputs.review }}
+        run: |
+          gh auth setup-git
+          A="$RUNNER_TEMP/archive"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git worktree add -q -B reviewer/archive "$A" origin/reviewer/archive
+          dest="${REVIEW%.json}-response.json"
+          if [ -e "$A/reviews/$dest" ]; then          # a second answer to the same review: keep both
+            dest="${REVIEW%.json}-response-$(date -u +%H%M%S).json"
+          fi
+          cp "$RUNNER_TEMP/response.json" "$A/reviews/$dest"
+          git -C "$A" add -A
+          git -C "$A" commit -q -m "Archive response to $REVIEW"
+          for attempt in 1 2 3; do
+            if git -C "$A" push -q origin reviewer/archive; then exit 0; fi
+            git -C "$A" pull -q --rebase origin reviewer/archive
+          done
+          echo "::warning::Could not push the response record to reviewer/archive"
+
+      - name: Report a failure on the PR
+        if: failure() && needs.gate.outputs.pr != ''
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          reason="see the run log"
+          if [ -s "$RUNNER_TEMP/respond_error.txt" ]; then reason=$(head -c 800 "$RUNNER_TEMP/respond_error.txt"); fi
+          if [ -s "$RUNNER_TEMP/fix_pr_url" ]; then
+            outcome="the fix PR was opened ($(cat "$RUNNER_TEMP/fix_pr_url")) but a later step failed"
+          else
+            outcome="nothing was changed"
+          fi
+          printf '❌ Author response failed: %s.\n\n```\n%s\n```\n\nRun: %s\n' "$outcome" "$reason" "$RUN_URL" \
+            > "$RUNNER_TEMP/fail.md"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/fail.md"

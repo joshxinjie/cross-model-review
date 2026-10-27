@@ -1,0 +1,109 @@
+# Test fixture: the template config plus a footer, schedules and the fixture's files.
+# Cross-model review settings for this project (https://github.com/joshxinjie/cross-model-review).
+#
+# Reviews must come from a different model than the work's author. Each PR's author is found from its branch name
+# (`authors`); `/review <name>` picks a reviewer by name, and `/review` alone uses that author's `default_reviewer`.
+# Project reviews have no single author: they use `default_author` and the top-level `default_reviewer`. Pin exact
+# model IDs so reviews are reproducible. Credentials live in GitHub repo secrets, never in this file.
+#
+# Every review is saved as reviews/YYYY-MM-DD-<scope>-<reviewer>.json (scope `project` or `pr<number>`) on the
+# reviewer/archive branch; decisions on its findings go in `decision_log`.
+
+schema_version: 1
+instructions: REVIEW.md            # the reviewer's instructions (sent unchanged to every reviewer)
+decision_log: reviews/decisions.md
+footer: "_Research and paper-testing only; not financial advice._"
+# protected: [scripts/build_report.py]               # more paths the author may not edit when answering a review
+
+# The model that built a PR also answers its reviews on `/respond` (review/RESPOND.md), on its subscription.
+authors:
+  claude:                      # everything not on a branch listed below
+    provider: claude-code
+    model: claude-opus-5-5
+    secret: CLAUDE_CODE_OAUTH_TOKEN
+    instructions: review/RESPOND.md
+    default_reviewer: gpt      # another model family; `/review fable` for a Claude reviewer
+  codex:                       # work built with OpenAI Codex (Codex cloud names its branches codex/...)
+    branch_prefixes: [codex/]
+    provider: codex
+    model: gpt-6.1-sol
+    reasoning_effort: high
+    secret: CODEX_AUTH_JSON
+    instructions: review/RESPOND.md
+    default_reviewer: opus     # `/review fable` for the alternative
+default_author: claude
+
+default_reviewer: fable        # project reviews: no single author, and Fable is neither author's model
+
+reviewers:
+  # Claude Code on a Claude subscription token (`claude setup-token`). Reads files, runs the tests, searches the web
+  # (no page fetching); never edits.
+  fable:
+    provider: claude-code
+    model: claude-fable-5-1
+    secret: CLAUDE_CODE_OAUTH_TOKEN
+    enabled: true
+  # Claude Opus: reviews work built by Codex (refused on Claude-built PRs, being Claude's author model).
+  opus:
+    provider: claude-code
+    model: claude-opus-5-5
+    secret: CLAUDE_CODE_OAUTH_TOKEN
+    enabled: true
+  # The same model through the Claude API (paid credits). Enable if a Console API key is added.
+  fable-api:
+    provider: anthropic
+    model: claude-fable-5-1
+    secret: ANTHROPIC_API_KEY
+    enabled: false
+  # OpenAI GPT through the Codex CLI on a ChatGPT login (auth.json from `codex login`, in CODEX_AUTH_JSON; the
+  # workflow saves it back when Codex refreshes it, which needs SECRETS_WRITE_TOKEN). Works in a disposable copy
+  # with the network off, cached web search only; ignores AGENTS.md in the reviewed tree. Each project needs its own
+  # login: two projects sharing one would invalidate each other's refresh token.
+  gpt:
+    provider: codex
+    model: gpt-6.1-sol
+    reasoning_effort: high
+    cli_version: 0.164.0          # keep in step with the workflows' codex-version input
+    secret: CODEX_AUTH_JSON
+    enabled: true
+  gemini:                         # not usable on a subscription in CI as of 2026-10
+    provider: google
+    model: null
+    secret: GEMINI_API_KEY
+    enabled: false
+
+limits:
+  max_findings: 15
+  max_input_tokens:          # context pack size; the harness trims lowest-priority files first
+    pr: 150000
+    project: 400000
+  max_output_tokens: 16000
+  max_agent_turns: 40          # Claude Code reviewers: tool calls before it must answer
+  agent_timeout_minutes: 25    # Claude Code: one budget per run, shared by the retry (job limit 45)
+  codex_timeout_minutes: 30    # Codex reviewers: the same (it has no turn cap)
+  respond_max_agent_turns: 100
+  respond_agent_timeout_minutes: 40
+  respond_codex_timeout_minutes: 40
+  max_runs_per_pr_per_day: 6   # Singapore day
+
+triggers:
+  pr_comment_command: /review
+  respond_command: /respond
+  pr_label: review             # must match the `label` input of the caller workflow
+  skip_branches: [reviewer/]   # never review the reviewer's own output (project-review PRs ARE reviewed)
+
+# Scheduled reviews: each cron must also be in the caller workflow's `schedule:` list.
+#   kind project   -> review the project (optional areas, reviewer)
+#   kind pr        -> review the open PR on `branch` ({month} = YYYY-MM, Singapore time)
+schedules:
+  - {cron: "23 5 6 1,4,7,10 *", kind: project}
+  - {cron: "23 3 6 * *", kind: pr, branch: "review/{month}"}
+
+context:
+  pr:
+    always: [REVIEW.md, reviews/decisions.md, METHODOLOGY.md]       # plus the diff, changed files and the files that import them
+    include_dependents: true
+  project:
+    always: [REVIEW.md, reviews/decisions.md, README.md, METHODOLOGY.md]
+    default_areas: [evaluation/]
+    exclude: ["**/*.csv", "**/*.parquet"]
