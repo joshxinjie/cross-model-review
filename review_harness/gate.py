@@ -300,6 +300,15 @@ def archive_listing(root: Path) -> list[str]:
     return out.stdout.split() if out.returncode == 0 else []
 
 
+def not_set_up(event: dict, inputs: dict) -> dict:
+    """The settings are read from main, so a PR that adds them can't be reviewed by them: say so on the PR instead of
+    failing."""
+    pr = (event.get("issue") or {}).get("number") or (event.get("pull_request") or {}).get("number") or inputs.get("pr")
+    return skip("Cross-model review isn't set up on the default branch yet: `review/config.yaml` is missing there. "
+                "The settings are read from the default branch, so merge them first (a PR that only adds them), then "
+                "review again.", pr=str(pr or ""))
+
+
 def write_outputs(result: dict, output_file: str, body_file: str) -> None:
     body = result.pop("body", None)
     if body is not None:
@@ -322,6 +331,11 @@ def main() -> int:
         return r.json()
 
     inputs = event.get("inputs") or {}
+    if not (ROOT / "review" / "config.yaml").exists():
+        result = not_set_up(event, inputs)
+        write_outputs(result, os.environ["GITHUB_OUTPUT"], str(Path(os.environ.get("RUNNER_TEMP", ".")) / "pr_body.md"))
+        print(json.dumps(result, indent=1))
+        return 0
     if "--respond" in sys.argv:
         result = resolve_respond(os.environ["GITHUB_EVENT_NAME"], event, inputs, load_config(ROOT), get_json,
                                  archive_newest_first(ROOT), lambda name: read_archive_file(ROOT, name))

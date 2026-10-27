@@ -26,6 +26,9 @@ A reviewer that is the same model as the PR's author is refused.
 
 ## Add it to a repo
 
+The harness reads a repo's settings from its default branch, so land them in two PRs: first the settings files
+(steps 1–2 below, without the workflows), then the workflows. The first PR can't be reviewed by the new setup.
+
 1. **Copy the templates** into the repo, keeping their paths:
    - `templates/workflows/review.yml` and `respond.yml` → `.github/workflows/`
    - `templates/review/config.yaml` and `templates/review/RESPOND.md` → `review/`
