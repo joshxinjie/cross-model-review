@@ -247,6 +247,7 @@ jobs:
           CODEX_AUTH_OUT: ${{ runner.temp }}/codex_auth_refreshed.json  # written only if Codex refreshed it
           AUTHOR: ${{ needs.gate.outputs.author }}
           HEAD_REF: ${{ needs.gate.outputs.head_ref }}
+          PR_TITLE: ${{ needs.gate.outputs.title }}
           PR: ${{ needs.gate.outputs.pr }}
           BASE: ${{ needs.gate.outputs.base }}
           REVIEW: ${{ needs.gate.outputs.review }}
@@ -259,7 +260,7 @@ jobs:
           python -m review_harness.respond --work-dir "$RUNNER_TEMP/work" --review-file "$RUNNER_TEMP/review.json" \
             --review-name "$REVIEW" --pr "$PR" --base "$BASE" --fixed-in "$BRANCH" \
             --summary-out "$RUNNER_TEMP/summary.md" --out "$RUNNER_TEMP/response.json" \
-            --author "$AUTHOR" --head-ref "$HEAD_REF" --error-file "$RUNNER_TEMP/respond_error.txt"
+            --author "$AUTHOR" --head-ref "$HEAD_REF" --title "$PR_TITLE" --error-file "$RUNNER_TEMP/respond_error.txt"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"

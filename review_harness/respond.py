@@ -242,7 +242,7 @@ def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[
 
 def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope: dict, review_name: str,
             pr: int | None, base: str, fixed_in: str, date: str | None = None, author: dict | None = None,
-            head_ref: str | None = None) -> dict:
+            head_ref: str | None = None, title: str | None = None) -> dict:
     """Returns {"status": "done" | "nothing" | "invalid", ...}; on "done" the decision log in work_dir is updated."""
     if "invalid" in envelope.get("meta", {}) or not envelope.get("review"):
         raise ValueError(f"{review_name} failed validation; there are no findings to answer")
@@ -254,7 +254,7 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
         return {"status": "nothing", "already": already}
     author = author or get_author(cfg)
     schema = json.loads(author_schema_path(root, author).read_text())
-    allowed = scope_for(cfg, head_ref)
+    allowed = scope_for(cfg, head_ref, title)
     system, user = build_prompt(root, cfg, envelope, pending, pr, base, author, allowed)
     messages = [{"role": "user", "content": user}]
     errors, resp = ["not run"], None
@@ -299,6 +299,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--error-file")
     ap.add_argument("--author", help="who built the work (review/config.yaml authors; default: default_author)")
     ap.add_argument("--head-ref", help="the reviewed PR's branch (for review/config.yaml scopes)")
+    ap.add_argument("--title", help="the reviewed PR's title (for review/config.yaml scopes)")
     args = ap.parse_args(argv)
     try:
         from .providers.claude_code import ClaudeCodeProvider
@@ -320,7 +321,7 @@ def main(argv: list[str] | None = None) -> int:
         provider.on_step = progress.step
         progress.start()
         result = respond(ROOT, cfg, provider, work_dir, envelope, name, args.pr, args.base, args.fixed_in,
-                         author=author, head_ref=args.head_ref)
+                         author=author, head_ref=args.head_ref, title=args.title)
     except Exception as e:  # noqa: BLE001 - one-line reason for the PR, full traceback in the log
         if "progress" in locals():
             progress.finish(False, "stopped with an error (reason below)")

@@ -1635,3 +1635,20 @@ def test_missing_settings_on_main_give_a_message_not_a_crash():
     assert out["run"] == "false" and out["pr"] == "30" and "review/config.yaml" in out["message"]
     assert G.not_set_up({"pull_request": {"number": 5}}, {})["pr"] == "5"
     assert G.not_set_up({}, {"pr": "9"})["pr"] == "9" and G.not_set_up({}, {})["pr"] == ""
+
+
+def test_scopes_match_the_title_too_so_codex_branches_are_covered(tmp_path):
+    from review_harness.config import scope_for
+    cfg = dict(CFG, scopes=[{"branch_prefixes": ["research/"], "title_prefixes": ["research:"],
+                             "allowed": ["strategies/*/card.yaml"]}])
+    assert scope_for(cfg, "codex/new-idea", "Research: momentum — x") == ["strategies/*/card.yaml"]
+    assert scope_for(cfg, "research/s", "anything") is not None
+    assert scope_for(cfg, "codex/engine-fix", "feat: faster backtest") is None
+    work = _repo(tmp_path)
+    (work / "engine.py").write_text("y")
+    for ref, title in (("research/s", "research: s"), ("codex/s", "research: s")):
+        assert RS.revert_protected(work, ["review/"], scope_for(cfg, ref, title)) == ["engine.py"], ref
+        (work / "engine.py").write_text("y")
+    assert RS.revert_protected(work, ["review/"], scope_for(cfg, "codex/x", "feat: x")) == []
+    wf = (REPO / ".github" / "workflows" / "respond.yml").read_text()
+    assert '--title "$PR_TITLE"' in wf

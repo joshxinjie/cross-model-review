@@ -45,13 +45,15 @@ def protected_paths(cfg: dict, extras: bool = True) -> list[str]:
     return out
 
 
-def scope_for(cfg: dict, head_ref: str | None) -> list[str] | None:
-    """`scopes` in the config: on PRs whose branch starts with one of a scope's branch_prefixes, the author may only
-    change files matching its `allowed` globs when answering a review (others are undone). None: no limit beyond
-    the protected paths."""
-    ref = head_ref or ""
+def scope_for(cfg: dict, head_ref: str | None, title: str | None = None) -> list[str] | None:
+    """`scopes` in the config: on PRs whose branch starts with one of a scope's branch_prefixes, or whose title starts
+    with one of its title_prefixes (case-insensitive), the author may only change files matching its `allowed` globs
+    when answering a review (others are undone). Titles matter because a PR's kind need not show in its branch
+    (Codex's branches all start codex/). None: no limit beyond the protected paths."""
+    ref, name = head_ref or "", (title or "").strip().lower()
     for s in cfg.get("scopes") or []:
-        if any(ref.startswith(p) for p in s.get("branch_prefixes", [])):
+        if any(ref.startswith(p) for p in s.get("branch_prefixes", [])) or \
+                any(name.startswith(p.lower()) for p in s.get("title_prefixes", [])):
             return list(s.get("allowed", []))
     return None
 
