@@ -1685,3 +1685,54 @@ def test_commits_that_only_add_generated_files_keep_the_review_answerable():
     assert stale["run"] == "false" and "new commits" in stale["message"]
     assert answer(cfg, get_with(["CATALOGUE.md"], status="diverged"))["run"] == "false"   # history rewritten
     assert answer(CFG, get_with(["CATALOGUE.md"]))["run"] == "false"                      # no generated_paths set
+
+
+def test_decision_cells_quote_markdown_links_as_code():
+    """A reason quoting a contents line ('[Exercise](#integrative-exercise)') became a broken anchor in
+    reviews/decisions.md (agentic-harness-notes #7)."""
+    out = RS.cell('reads "[Exercise](#ex) · [Answer](../weeks/w.md#x)", ![a](b), and `see [ok](#y) here`', 800)
+    assert "`[Exercise](#ex)`" in out and "`[Answer](../weeks/w.md#x)`" in out
+    assert "`![a](b)`" in out and "!`" not in out                       # images keep their '!' inside the quote
+    assert "`see [ok](#y) here`" in out and "``" not in out             # existing code spans are left alone
+    for limit in range(5, 60):                                          # a cut never splits a quoted link
+        assert RS.cell("x" * 10 + " [a long label](#an-anchor) tail", limit).count("`") % 2 == 0
+
+
+def _failure_step_outcome(tmp_path, files: dict) -> str:
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "respond.yml").read_text())
+    step = next(s for s in wf["jobs"]["respond"]["steps"] if s.get("name") == "Report a failure on the PR")
+    for name, text in files.items():
+        (tmp_path / name).write_text(text)
+    bindir = tmp_path / "bin"
+    bindir.mkdir(exist_ok=True)
+    (bindir / "gh").write_text("#!/bin/sh\nexit 0\n")                   # stand-in: the comment is read from fail.md
+    (bindir / "gh").chmod(0o755)
+    env = {"PATH": f"{bindir}:{os.environ['PATH']}", "RUNNER_TEMP": str(tmp_path), "PR": "6",
+           "HEAD_REF": "week-contents", "RUN_URL": "https://run", "COMPARE": "https://github.com/o/r/compare",
+           "GITHUB_REPOSITORY": "o/r"}
+    subprocess.run(["bash", "-ec", step["run"]], env=env, check=True)
+    return (tmp_path / "fail.md").read_text()
+
+
+def test_failure_comment_names_a_pushed_branch_with_no_pr(tmp_path):
+    """/respond pushed its branch, then could not open the PR, and said 'nothing was changed' (agentic-harness-notes
+    #6)."""
+    text = _failure_step_outcome(tmp_path, {"pushed_branch": "respond/pr6-2026-10-22\n",
+                                            "respond_error.txt": "Opening the fix PR failed: HTTP 403"})
+    assert "pushed to `respond/pr6-2026-10-22`" in text and "nothing was changed" not in text
+    assert "https://github.com/o/r/compare/week-contents...respond/pr6-2026-10-22" in text and "HTTP 403" in text
+
+
+def test_failure_comment_prefers_an_opened_pr_and_defaults_to_nothing_changed(tmp_path):
+    opened = _failure_step_outcome(tmp_path, {"pushed_branch": "b", "fix_pr_url": "https://pr/9"})
+    assert "fix PR was opened (https://pr/9)" in opened
+    (tmp_path / "pushed_branch").unlink()
+    (tmp_path / "fix_pr_url").unlink()
+    assert "nothing was changed" in _failure_step_outcome(tmp_path, {})
+
+
+def test_response_record_is_archived_even_if_opening_the_pr_fails():
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "respond.yml").read_text())
+    steps = {s.get("name"): s for s in wf["jobs"]["respond"]["steps"]}
+    assert "!cancelled()" in steps["Archive the response record"]["if"]
+    assert 'echo "$BRANCH" > "$RUNNER_TEMP/pushed_branch"' in steps["Open the fix PR into the reviewed PR's branch"]["run"]
