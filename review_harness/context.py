@@ -155,8 +155,11 @@ def find_dependents(root: Path, changed: list[str], limit: int = MAX_DEPENDENTS)
 # read from the project's trusted checkout (main), so a pull request cannot rewrite the decision log the reviewer is
 # told to respect.
 def always_source(rel: str, root: Path, trusted: Path | None, cfg: dict) -> Path:
+    import fnmatch
     from .config import protected_paths
-    return trusted if trusted is not None and rel.startswith(tuple(protected_paths(cfg))) else root
+    hit = any(rel.startswith(p) or fnmatch.fnmatchcase(rel, p + ("*" if p.endswith("/") else ""))
+              for p in protected_paths(cfg))
+    return trusted if trusted is not None and hit else root
 
 
 def fit_to_budget(items: list[Item], budget: int) -> tuple[list[Item], list[str]]:

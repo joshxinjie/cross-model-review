@@ -35,7 +35,8 @@ def author_schema_path(root: Path, author: dict) -> Path:
 
 def protected_paths(cfg: dict) -> list[str]:
     """The review process's own files: the author may not edit them, and the reviewer's copies come from main.
-    Always the workflows, review/, the decision log's folder and the reviewer instructions, plus `protected`."""
+    Always the workflows, review/, the decision log's folder and the reviewer instructions, plus `protected` (a
+    path, a folder ending in /, or a glob such as strategies/*/results/)."""
     base = [".github/", "review/", str(Path(cfg["decision_log"]).parent) + "/", cfg["instructions"]]
     out = []
     for p in base + list(cfg.get("protected", [])):

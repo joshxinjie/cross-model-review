@@ -1613,3 +1613,12 @@ def test_respond_workflow_checks_the_authors_changes_without_a_token():
     assert names.index("Author answers the findings") < names.index("Check the author's changes") \
         < names.index("Open the fix PR into the reviewed PR's branch")
     assert '--head-ref "$HEAD_REF"' in steps["Author answers the findings"]["run"]
+
+
+def test_protected_globs_are_undone_too(tmp_path):
+    work = _repo(tmp_path)
+    (work / "strategies" / "a" / "results").mkdir(parents=True)
+    (work / "strategies" / "a" / "results" / "report.md").write_text("hand edit")
+    (work / "strategies" / "a" / "card.yaml").write_text("ok")
+    assert RS.revert_protected(work, ["review/", "strategies/*/results/"]) == ["strategies/a/results/report.md"]
+    assert (work / "strategies" / "a" / "card.yaml").exists()

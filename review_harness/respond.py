@@ -157,7 +157,8 @@ def revert_protected(work_dir: Path, protected: list[str], allowed: list[str] | 
     def is_protected(path):
         if path is None:
             return False
-        if any(path == p or path.startswith(p) for p in protected):
+        if any(path == p or path.startswith(p) or fnmatch.fnmatchcase(path, p + ("*" if p.endswith("/") else ""))
+               for p in protected):        # plain prefixes, or globs such as strategies/*/results/
             return True
         return allowed is not None and not any(fnmatch.fnmatchcase(path, g) for g in allowed)
 
