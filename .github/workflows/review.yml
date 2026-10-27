@@ -1,0 +1,398 @@
+name: Cross-model review (reusable)
+
+# Called from a project's own workflow (templates/review.yml). A model from a different family reviews pull requests
+# and the project, under the project's REVIEW.md and review/config.yaml; the reviewer only comments.
+#
+# Layout on the runner:
+#   $GITHUB_WORKSPACE        the project: the PR's head for PR reviews, left exactly as pushed; main otherwise
+#   $RUNNER_TEMP/project     the project's main, trusted: config, instructions, decision log (REVIEW_PROJECT_ROOT)
+#   $RUNNER_TEMP/harness     this repository at `harness-ref`: the code that runs the review (PYTHONPATH)
+# So a pull request cannot change how it is reviewed, and the reviewer reads and tests one revision.
+
+on:
+  workflow_call:
+    inputs:
+      harness-ref:
+        description: "Branch, tag or commit of cross-model-review to run (match the ref in `uses:`)"
+        type: string
+        default: main
+      harness-repo:
+        type: string
+        default: joshxinjie/cross-model-review
+      python-version:
+        type: string
+        default: "3.12"
+      install:
+        description: "Shell command that installs the project's dependencies (agentic reviewers run its tests)"
+        type: string
+        default: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
+      codex-version:
+        description: "Pinned Codex CLI for Codex reviewers"
+        type: string
+        default: "0.164.0"
+      label:
+        description: "The PR label that requests a review (review/config.yaml triggers.pr_label)"
+        type: string
+        default: review
+
+jobs:
+  gate:
+    # Cheap pre-filter so ordinary comments don't start a runner; gate.py makes the real decision.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    outputs:
+      run: ${{ steps.gate.outputs.run }}
+      scope: ${{ steps.gate.outputs.scope }}
+      pr: ${{ steps.gate.outputs.pr }}
+      reviewer: ${{ steps.gate.outputs.reviewer }}
+      provider: ${{ steps.gate.outputs.provider }}
+      author: ${{ steps.gate.outputs.author }}
+      codex: ${{ steps.gate.outputs.codex }}
+      base: ${{ steps.gate.outputs.base }}
+      head_sha: ${{ steps.gate.outputs.head_sha }}
+      title: ${{ steps.gate.outputs.title }}
+      areas: ${{ steps.gate.outputs.areas }}
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      REVIEW_PROJECT_ROOT: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}   # config and instructions come from main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Fetch the review harness
+        env:
+          REPO: ${{ inputs.harness-repo }}
+          REF: ${{ inputs.harness-ref }}
+        run: |
+          git init -q "$RUNNER_TEMP/harness"
+          git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$REF"
+          git -C "$RUNNER_TEMP/harness" checkout -q FETCH_HEAD
+          echo "PYTHONPATH=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
+
+      - name: Install harness dependencies
+        run: pip install pyyaml requests
+
+      - name: Fetch the review archive
+        run: git fetch -q origin reviewer/archive:refs/remotes/origin/reviewer/archive || echo "No archive branch yet"
+
+      - name: Decide what to review
+        id: gate
+        run: python -m review_harness.gate
+
+      - name: Explain why not
+        if: steps.gate.outputs.run == 'false' && steps.gate.outputs.message != '' && steps.gate.outputs.pr != ''
+        env:
+          PR: ${{ steps.gate.outputs.pr }}
+          MSG: ${{ steps.gate.outputs.message }}
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="ℹ️ $MSG"
+
+      - name: Acknowledge the command
+        if: steps.gate.outputs.run == 'true' && github.event_name == 'issue_comment'
+        run: gh api "repos/$GITHUB_REPOSITORY/issues/comments/${{ github.event.comment.id }}/reactions" -f content=eyes
+
+      - name: Remove the label when no review follows
+        # The review job removes it after a review; when the gate turns the request down (or fails), that job is
+        # skipped, so remove it here, or adding the label again later would start nothing.
+        if: >-
+          always() && github.event_name == 'pull_request' && github.event.label.name == inputs.label &&
+          steps.gate.outputs.run != 'true'
+        env:
+          PR: ${{ github.event.pull_request.number }}
+          LABEL: ${{ inputs.label }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/$LABEL" || true
+
+  review:
+    needs: gate
+    if: needs.gate.outputs.run == 'true'
+    # Runs that use the shared ChatGPT login (any Codex reviewer, whatever the comment said) queue one at a time
+    # across all PRs and workflows, since its refresh token rotates; other reviews queue per PR. Decided after the
+    # gate, so the group follows the reviewer actually chosen. GitHub keeps one waiting run
+    # per group: a third queued behind two replaces the waiting one.
+    concurrency:
+      group: ${{ needs.gate.outputs.codex == 'true' && 'cross-model-review-codex-login' || format('cross-model-review-{0}', needs.gate.outputs.pr || 'project') }}
+      cancel-in-progress: false
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}   # config and instructions come from main
+          fetch-depth: 0
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ inputs.python-version }}
+
+      - name: Fetch the review harness
+        env:
+          REPO: ${{ inputs.harness-repo }}
+          REF: ${{ inputs.harness-ref }}
+        run: |
+          git init -q "$RUNNER_TEMP/harness"
+          git -C "$RUNNER_TEMP/harness" fetch -q --depth 1 "https://github.com/$REPO" "$REF"
+          git -C "$RUNNER_TEMP/harness" checkout -q FETCH_HEAD
+          echo "PYTHONPATH=$RUNNER_TEMP/harness" >> "$GITHUB_ENV"
+
+      - name: Install harness dependencies
+        run: pip install pyyaml requests
+
+      - name: Keep the project's trusted main in its own folder
+        # Config, instructions and the decision log are read from here; the workspace becomes the PR's head.
+        run: |
+          git worktree add -q --detach "$RUNNER_TEMP/project" HEAD
+          echo "REVIEW_PROJECT_ROOT=$RUNNER_TEMP/project" >> "$GITHUB_ENV"
+
+      - name: Fetch the review archive
+        run: git fetch -q origin reviewer/archive:refs/remotes/origin/reviewer/archive || echo "No archive branch yet"
+
+      - name: Fetch the PR description
+        if: needs.gate.outputs.scope == 'pr'
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+        run: gh api "repos/$GITHUB_REPOSITORY/pulls/$PR" --jq '.body // ""' > "$RUNNER_TEMP/pr_body.md"
+
+      - name: Check out the PR (harness stays from main)
+        if: needs.gate.outputs.scope == 'pr'
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          HEAD_SHA: ${{ needs.gate.outputs.head_sha }}
+        run: |
+          git fetch -q origin "pull/$PR/head:pr-head"
+          if [ "$(git rev-parse pr-head)" != "$HEAD_SHA" ]; then
+            echo "::warning::PR #$PR moved since the gate ran; reviewing its latest commit"
+          fi
+          git checkout -q pr-head      # unmodified: harness and config run from their own folders
+
+      - name: Remove the checkout's git credential before any PR code runs
+        # pip install below can run a PR's build hooks; the push steps restore a credential with `gh auth setup-git`.
+        run: git config --local --unset-all http.https://github.com/.extraheader || true
+
+      - name: Install Claude Code and the repo's dependencies (agentic reviewers run the tests)
+        if: needs.gate.outputs.provider == 'claude-code'
+        env:
+          GITHUB_TOKEN: ""                 # the PR's requirements may run build code: no GitHub token here
+          GH_TOKEN: ""
+        run: |
+          npm install -g @anthropic-ai/claude-code
+          claude --version
+          ${{ inputs.install }}
+
+      - name: Install the Codex CLI and the repo's dependencies (Codex reviewer)
+        if: needs.gate.outputs.provider == 'codex'
+        env:
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: |
+          npm install -g "@openai/codex@${{ inputs.codex-version }}"
+          codex --version
+          ${{ inputs.install }}
+
+      - name: Let Codex's sandbox start (Codex reviewer)
+        if: needs.gate.outputs.provider == 'codex'
+        env:
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+        run: |
+          # Codex runs each command inside bubblewrap, which needs unprivileged user namespaces; Ubuntu 24.04 runners
+          # block those through AppArmor, so in the first live review every command failed before a shell started.
+          # Allow them on this throwaway runner. Codex's own rules still apply (no network, writes only in the copy).
+          if [ -e /proc/sys/kernel/apparmor_restrict_unprivileged_userns ]; then
+            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+          fi
+          # Check with the review's own sandbox settings: a reviewer that cannot run commands reviews blind.
+          probe="$RUNNER_TEMP/sandbox-probe"
+          mkdir -p "$probe" && cd "$probe"
+          if codex sandbox -c 'sandbox_mode="workspace-write"' -c sandbox_workspace_write.network_access=false \
+               -- python -c 'open("probe.txt", "w").write("ok"); print("Codex sandbox OK: commands and writes work")'; then
+            :
+          else
+            echo "::warning::Codex's sandbox could not start, so GPT will review without running commands or tests"
+          fi
+
+      - name: Hand the progress-comment token to the harness in a file
+        # The harness reads and deletes this file before it starts the reviewer, so the reviewer (which can read
+        # other processes' environments) never finds a GitHub token in its parent processes.
+        run: |
+          umask 077
+          printf '%s' "$GITHUB_TOKEN" > "$RUNNER_TEMP/progress_token"
+
+      - name: Run the review
+        id: review
+        env:
+          # Only the selected reviewer's own credential; no GitHub token (step-level values override the job's).
+          GITHUB_TOKEN: ""
+          GH_TOKEN: ""
+          PROGRESS_TOKEN_FILE: ${{ runner.temp }}/progress_token
+          PROGRESS_PR: ${{ needs.gate.outputs.pr }}      # live progress comment (empty for project reviews)
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CLAUDE_CODE_OAUTH_TOKEN: ${{ needs.gate.outputs.provider == 'claude-code' && secrets.CLAUDE_CODE_OAUTH_TOKEN || '' }}
+          CODEX_AUTH_JSON: ${{ needs.gate.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
+          CODEX_AUTH_OUT: ${{ runner.temp }}/codex_auth_refreshed.json  # written only if Codex refreshed it
+          ANTHROPIC_API_KEY: ${{ needs.gate.outputs.provider == 'anthropic' && secrets.ANTHROPIC_API_KEY || '' }}
+          SCOPE: ${{ needs.gate.outputs.scope }}
+          PR: ${{ needs.gate.outputs.pr }}
+          BASE: ${{ needs.gate.outputs.base }}
+          TITLE: ${{ needs.gate.outputs.title }}
+          REVIEWER: ${{ needs.gate.outputs.reviewer }}
+          AUTHOR: ${{ needs.gate.outputs.author }}
+          AREAS: ${{ needs.gate.outputs.areas }}
+        run: |
+          # actions/checkout left the job's GitHub token in .git/config; remove it before any reviewer runs.
+          git config --local --unset-all http.https://github.com/.extraheader || true
+          set +e
+          if [ "$SCOPE" = "pr" ]; then
+            out=$(python -m review_harness.run --scope pr --reviewer "$REVIEWER" --author "$AUTHOR" --base "origin/$BASE" --repo-dir "$GITHUB_WORKSPACE" \
+                  --head pr-head --pr "$PR" --title "$TITLE" --body-file "$RUNNER_TEMP/pr_body.md" \
+                  --error-file "$RUNNER_TEMP/review_error.txt")
+          else
+            # shellcheck disable=SC2086  # AREAS is deliberately split into separate paths
+            out=$(python -m review_harness.run --scope project --reviewer "$REVIEWER" --repo-dir "$GITHUB_WORKSPACE" ${AREAS:+--areas $AREAS} \
+                  --error-file "$RUNNER_TEMP/review_error.txt")
+          fi
+          code=$?
+          set -e
+          file=$(printf '%s\n' "$out" | tail -n 1)
+          if [ -f "$file" ]; then
+            cp "$file" "$RUNNER_TEMP/"
+            echo "file=$file" >> "$GITHUB_OUTPUT"
+            echo "name=$(basename "$file")" >> "$GITHUB_OUTPUT"
+          fi
+          exit $code
+
+      - name: Save the refreshed Codex login
+        # Codex refreshes its ChatGPT tokens about every 8 days; the new file must replace the secret, or the next run
+        # starts from a stale refresh token. GITHUB_TOKEN cannot write secrets, hence SECRETS_WRITE_TOKEN (a
+        # fine-grained token with this repo's "Secrets: read and write" permission only).
+        if: always() && needs.gate.outputs.provider == 'codex'
+        env:
+          GH_TOKEN: ${{ secrets.SECRETS_WRITE_TOKEN }}
+          PR: ${{ needs.gate.outputs.pr }}
+          POST_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          f="$RUNNER_TEMP/codex_auth_refreshed.json"
+          [ -s "$f" ] || { echo "Codex login unchanged"; exit 0; }
+          python3 - "$f" <<'PY'
+          import json, sys
+          def walk(v):
+              if isinstance(v, dict):
+                  for x in v.values(): walk(x)
+              elif isinstance(v, list):
+                  for x in v: walk(x)
+              elif isinstance(v, str) and len(v) >= 20:
+                  print(f"::add-mask::{v}")
+          walk(json.load(open(sys.argv[1])))
+          PY
+          if [ -n "$GH_TOKEN" ] && gh secret set CODEX_AUTH_JSON --repo "$GITHUB_REPOSITORY" < "$f"; then
+            echo "Saved the refreshed Codex login"
+          else
+            msg="⚠️ Codex refreshed its ChatGPT login but it could not be saved (is SECRETS_WRITE_TOKEN set?). The next Codex run may fail until the login is re-seeded."
+            echo "::warning::$msg"
+            if [ -n "$PR" ]; then GH_TOKEN="$POST_TOKEN" gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -f body="$msg"; fi
+          fi
+          rm -f "$f"
+
+      - name: Post the review on the PR
+        if: needs.gate.outputs.scope == 'pr' && steps.review.outcome == 'success'
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          BASE: ${{ needs.gate.outputs.base }}
+          FILE: ${{ steps.review.outputs.file }}
+        run: |
+          python -m review_harness.post "$FILE" --repo "$GITHUB_REPOSITORY" --pr "$PR" \
+            --base "origin/$BASE" --head pr-head --repo-dir "$GITHUB_WORKSPACE" --post
+
+      - name: Open a PR with the project review
+        if: needs.gate.outputs.scope == 'project' && steps.review.outcome == 'success'
+        env:
+          FILE: ${{ steps.review.outputs.file }}
+          NAME: ${{ steps.review.outputs.name }}
+        run: |
+          gh auth setup-git                      # the review step removed the checkout's credential
+          python -m review_harness.post "$FILE" --summary-out "$RUNNER_TEMP/summary.md"
+          branch="reviewer/${NAME%.json}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -q -c "$branch"
+          git add "$FILE"
+          git commit -q -m "Cross-model project review ${NAME%.json}"
+          git push -q origin "$branch"
+          # Opening a PR needs "Allow GitHub Actions to create and approve pull requests" in the repo's Actions
+          # settings; without it, fall back to an issue carrying the same summary and the branch name.
+          if ! gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="Cross-model project review (${NAME%.json})" \
+                 -f head="$branch" -f base=main -F body=@"$RUNNER_TEMP/summary.md" --jq .html_url; then
+            printf '\n\nThe review file is on branch `%s`; open a PR from it to keep it on main.\n' "$branch" \
+              >> "$RUNNER_TEMP/summary.md"
+            gh api "repos/$GITHUB_REPOSITORY/issues" -f title="Cross-model project review (${NAME%.json})" \
+              -F body=@"$RUNNER_TEMP/summary.md" --jq .html_url
+          fi
+
+      - name: Archive the review record
+        if: always() && steps.review.outputs.name != ''
+        env:
+          NAME: ${{ steps.review.outputs.name }}
+        run: |
+          gh auth setup-git                      # the review step removed the checkout's credential
+          A="$RUNNER_TEMP/archive"
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git rev-parse -q --verify origin/reviewer/archive >/dev/null; then
+            git worktree add -q -B reviewer/archive "$A" origin/reviewer/archive
+          else
+            git worktree add -q --detach "$A"
+            git -C "$A" checkout -q --orphan reviewer/archive
+            git -C "$A" rm -rfq .
+            printf '%s\n' "# Review archive" "" \
+              "Every cross-model review (REVIEW.md on main), valid or not, as saved by the workflow." \
+              "Never merged into main. Project reviews also arrive on main through their own PRs." > "$A/README.md"
+          fi
+          mkdir -p "$A/reviews"
+          dest="$NAME"
+          if [ -e "$A/reviews/$dest" ]; then       # never overwrite a record (run.py should already avoid this)
+            dest="${NAME%.json}-$(date -u +%H%M%S).json"
+            echo "::warning::$NAME already archived; saving this record as $dest"
+          fi
+          cp "$RUNNER_TEMP/$NAME" "$A/reviews/$dest"
+          git -C "$A" add -A
+          git -C "$A" commit -q -m "Archive $NAME"
+          for attempt in 1 2 3; do
+            if git -C "$A" push -q origin reviewer/archive; then exit 0; fi
+            git -C "$A" pull -q --rebase origin reviewer/archive
+          done
+          echo "::warning::Could not push the review record to reviewer/archive"
+
+      - uses: actions/upload-artifact@v4
+        if: always() && steps.review.outputs.name != ''
+        with:
+          name: ${{ steps.review.outputs.name }}
+          path: ${{ runner.temp }}/${{ steps.review.outputs.name }}
+
+      - name: Remove the label so it can be added again
+        if: always() && github.event_name == 'pull_request' && needs.gate.outputs.pr != ''
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          LABEL: ${{ inputs.label }}
+        run: gh api -X DELETE "repos/$GITHUB_REPOSITORY/issues/$PR/labels/$LABEL" || true
+
+      - name: Report a failure on the PR
+        if: failure() && needs.gate.outputs.pr != ''
+        env:
+          PR: ${{ needs.gate.outputs.pr }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          reason="see the run log"
+          if [ -s "$RUNNER_TEMP/review_error.txt" ]; then reason=$(head -c 800 "$RUNNER_TEMP/review_error.txt"); fi
+          printf '❌ Cross-model review failed.\n\n```\n%s\n```\n\nRun: %s\n' "$reason" "$RUN_URL" > "$RUNNER_TEMP/fail.md"
+          gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/fail.md"

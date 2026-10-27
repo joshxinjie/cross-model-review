@@ -1,0 +1,33 @@
+name: Cross-model review response
+
+# The model that built a PR answers the latest cross-model review of it (review/RESPOND.md): comment "/respond"
+# (or "/respond <review file>.json") on the reviewed PR, or Actions tab -> Run workflow. Its fixes and decisions
+# arrive as a pull request into the reviewed PR's branch; nothing counts until you merge it.
+
+on:
+  issue_comment:
+    types: [created]
+  workflow_dispatch:
+    inputs:
+      pr:
+        description: "PR number whose review to answer"
+        required: true
+      review:
+        description: "Review file name on reviewer/archive (blank = the PR's latest review)"
+        required: false
+        default: ""
+
+jobs:
+  respond:
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/respond'))
+    permissions:
+      contents: write          # push the respond/ branch; archive the response record
+      pull-requests: write     # open the fix PR
+      issues: write            # comment on the reviewed PR, react to /respond
+    uses: joshxinjie/cross-model-review/.github/workflows/respond.yml@main
+    with:
+      harness-ref: main
+      install: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
+    secrets: inherit

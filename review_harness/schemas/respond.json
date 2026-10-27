@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/joshxinjie/cross-model-review/review_harness/schemas/respond.json",
+  "title": "Author response to a cross-model review",
+  "description": "Output the author model returns for /respond (review/RESPOND.md).",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "summary", "responses", "tests"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "summary": {"type": "string", "maxLength": 700},
+    "responses": {
+      "type": "array",
+      "maxItems": 15,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["finding_id", "decision", "reason", "changes"],
+        "properties": {
+          "finding_id": {"type": "string", "pattern": "^F[0-9]{1,2}$"},
+          "decision": {"enum": ["accept", "modify", "reject", "defer"]},
+          "reason": {"type": "string", "maxLength": 600},
+          "changes": {"type": "string", "maxLength": 300,
+                      "description": "Files changed, in one line; 'none' for reject; the backlog/roadmap item for defer."}
+        }
+      }
+    },
+    "tests": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["ran", "passed", "detail"],
+      "properties": {
+        "ran": {"type": "boolean"},
+        "passed": {"type": "boolean"},
+        "detail": {"type": "string", "maxLength": 300}
+      }
+    }
+  }
+}

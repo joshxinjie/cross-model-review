@@ -1,0 +1,50 @@
+name: Cross-model review
+
+# A model from a different family reviews pull requests and the project, under REVIEW.md and review/config.yaml.
+# Start it from the GitHub app: comment "/review" (or "/review <reviewer>") on a pull request, or add the "review"
+# label; or Actions tab -> Cross-model review -> Run workflow. The reviewer only comments.
+# The machinery lives in https://github.com/joshxinjie/cross-model-review.
+
+on:
+  issue_comment:
+    types: [created]
+  pull_request:
+    types: [labeled]
+  workflow_dispatch:
+    inputs:
+      scope:
+        description: "pr (one pull request) or project (whole repo or chosen areas)"
+        type: choice
+        options: [pr, project]
+        default: pr
+      pr:
+        description: "PR number (pr scope)"
+        required: false
+        default: ""
+      reviewer:
+        description: "Reviewer name from review/config.yaml (blank = default)"
+        required: false
+        default: ""
+      areas:
+        description: "Project scope: space-separated paths (blank = config default_areas)"
+        required: false
+        default: ""
+  # schedule:                     # each cron also needs an entry in review/config.yaml `schedules`
+  #   - cron: "23 5 6 1,4,7,10 *"
+
+jobs:
+  review:
+    # Cheap pre-filter so ordinary comments don't start a runner; the harness makes the real decision.
+    if: >-
+      github.event_name != 'issue_comment' ||
+      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+    permissions:
+      contents: write          # review records on reviewer/archive, project-review PR branches
+      pull-requests: write     # review comments, project-review PRs
+      issues: write            # comments, reactions, removing the label
+    uses: joshxinjie/cross-model-review/.github/workflows/review.yml@main
+    with:
+      harness-ref: main                   # keep in step with the ref after @ above
+      install: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
+      label: review
+    secrets: inherit
