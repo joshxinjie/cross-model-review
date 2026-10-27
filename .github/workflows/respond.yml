@@ -32,7 +32,8 @@ on:
         description: >-
           Optional shell command run in the work tree after the author's changes (e.g. the tests and a PR
           guard). Its result goes in the fix PR's description, since GitHub runs no checks on PRs a workflow opens.
-          Gets PR_TITLE and BASE; no GitHub token. Files it leaves behind are not committed.
+          Gets PR_TITLE, BASE and HEAD_REF; the author's changes are staged, not committed; no GitHub token.
+          Files it leaves behind are not committed.
         type: string
         default: ""
 
@@ -310,6 +311,7 @@ jobs:
           GH_TOKEN: ""
           PR_TITLE: ${{ needs.gate.outputs.title }}
           BASE: ${{ needs.gate.outputs.base }}
+          HEAD_REF: ${{ needs.gate.outputs.head_ref }}
           CHECK: ${{ inputs.check }}
         run: |
           cd "$RUNNER_TEMP/work"
