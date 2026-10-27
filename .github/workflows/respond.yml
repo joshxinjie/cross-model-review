@@ -28,6 +28,13 @@ on:
       codex-version:
         type: string
         default: "0.164.0"
+      check:
+        description: >-
+          Optional shell command run in the work tree after the author's changes (e.g. the tests and a PR
+          guard). Its result goes in the fix PR's description, since GitHub runs no checks on PRs a workflow opens.
+          Gets PR_TITLE and BASE; no GitHub token. Files it leaves behind are not committed.
+        type: string
+        default: ""
 
 jobs:
   gate:
@@ -42,6 +49,7 @@ jobs:
       review: ${{ steps.gate.outputs.review }}
       base: ${{ steps.gate.outputs.base }}
       head_ref: ${{ steps.gate.outputs.head_ref }}
+      title: ${{ steps.gate.outputs.title }}
       author: ${{ steps.gate.outputs.author }}
       provider: ${{ steps.gate.outputs.provider }}
       codex: ${{ steps.gate.outputs.codex }}
@@ -237,6 +245,7 @@ jobs:
           CODEX_AUTH_JSON: ${{ needs.gate.outputs.provider == 'codex' && secrets.CODEX_AUTH_JSON || '' }}
           CODEX_AUTH_OUT: ${{ runner.temp }}/codex_auth_refreshed.json  # written only if Codex refreshed it
           AUTHOR: ${{ needs.gate.outputs.author }}
+          HEAD_REF: ${{ needs.gate.outputs.head_ref }}
           PR: ${{ needs.gate.outputs.pr }}
           BASE: ${{ needs.gate.outputs.base }}
           REVIEW: ${{ needs.gate.outputs.review }}
@@ -249,7 +258,7 @@ jobs:
           python -m review_harness.respond --work-dir "$RUNNER_TEMP/work" --review-file "$RUNNER_TEMP/review.json" \
             --review-name "$REVIEW" --pr "$PR" --base "$BASE" --fixed-in "$BRANCH" \
             --summary-out "$RUNNER_TEMP/summary.md" --out "$RUNNER_TEMP/response.json" \
-            --author "$AUTHOR" --error-file "$RUNNER_TEMP/respond_error.txt"
+            --author "$AUTHOR" --head-ref "$HEAD_REF" --error-file "$RUNNER_TEMP/respond_error.txt"
           code=$?
           set -e
           echo "code=$code" >> "$GITHUB_OUTPUT"
@@ -293,6 +302,35 @@ jobs:
         env:
           PR: ${{ needs.gate.outputs.pr }}
         run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/summary.md"
+
+      - name: Check the author's changes
+        if: steps.respond.outputs.code == '0' && inputs.check != ''
+        env:
+          GITHUB_TOKEN: ""                 # runs the PR's code: no GitHub token
+          GH_TOKEN: ""
+          PR_TITLE: ${{ needs.gate.outputs.title }}
+          BASE: ${{ needs.gate.outputs.base }}
+          CHECK: ${{ inputs.check }}
+        run: |
+          cd "$RUNNER_TEMP/work"
+          git add -A                       # the author's changes, so anything the check writes can be dropped
+          set +e
+          bash -c "$CHECK" > "$RUNNER_TEMP/check.txt" 2>&1
+          code=$?
+          set -e
+          git checkout -q -- . && git clean -fdq
+          {
+            echo
+            if [ "$code" = 0 ]; then echo "**✅ Checks passed** after the author's changes."
+            else echo "**❌ Checks failed** after the author's changes (exit $code): look before merging."; fi
+            echo
+            echo "<details><summary>Check output (last 60 lines)</summary>"
+            echo
+            echo '```'
+            tail -n 60 "$RUNNER_TEMP/check.txt"
+            echo '```'
+            echo "</details>"
+          } >> "$RUNNER_TEMP/summary.md"
 
       - name: Open the fix PR into the reviewed PR's branch
         if: steps.respond.outputs.code == '0'

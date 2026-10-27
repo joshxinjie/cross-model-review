@@ -262,7 +262,8 @@ def resolve_respond(event_name: str, event: dict, inputs: dict, cfg: dict, get_j
     author = get_author(cfg) if project and name == project else author_for(cfg, pr["head"]["ref"])
     return {"run": "true", "message": "", "pr": str(number), "review": name, "head_ref": pr["head"]["ref"],
             "head_sha": pr["head"]["sha"], "base": pr["base"]["ref"], "author": author["name"],
-            "provider": author["provider"], "codex": codex_flag(author), "fix_prefix": fix_branch_prefix(author)}
+            "provider": author["provider"], "codex": codex_flag(author), "fix_prefix": fix_branch_prefix(author),
+            "title": pr.get("title", "")}
 
 
 STALE_KEYS = ("pr", "review", "head_sha", "author")

@@ -1586,3 +1586,30 @@ def test_agent_env_reaches_reviewers_but_never_credentials(tmp_path):
     assert env["TRADELAB_PROVIDER"] == "synthetic"
     cx = CX.codex_env(tmp_path, tmp_path, {"PATH": "/bin"}, agent_env_extra(cfg))
     assert cx["TRADELAB_PROVIDER"] == "synthetic"
+
+
+def test_scoped_branches_limit_what_the_author_may_change(tmp_path):
+    from review_harness.config import scope_for
+    cfg = dict(CFG, scopes=[{"branch_prefixes": ["research/"], "allowed": ["strategies/[!_]*/card.yaml", "notes.md"]}])
+    assert scope_for(cfg, "research/week-1") == ["strategies/[!_]*/card.yaml", "notes.md"]
+    assert scope_for(cfg, "feat/x") is None and scope_for(cfg, None) is None
+    work = _repo(tmp_path)                                                   # review/config.yaml + notes.md
+    (work / "strategies" / "a").mkdir(parents=True)
+    (work / "strategies" / "a" / "card.yaml").write_text("x")
+    (work / "engine.py").write_text("y")
+    (work / "notes.md").write_text("edited\n")
+    reverted = RS.revert_protected(work, ["review/"], scope_for(cfg, "research/week-1"))
+    assert sorted(reverted) == ["engine.py"]                                # outside the scope: undone
+    assert (work / "strategies" / "a" / "card.yaml").exists() and (work / "notes.md").read_text() == "edited\n"
+
+
+def test_respond_workflow_checks_the_authors_changes_without_a_token():
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "respond.yml").read_text())
+    steps = {s.get("name"): s for s in wf["jobs"]["respond"]["steps"]}
+    check = steps["Check the author's changes"]
+    assert check["env"]["GITHUB_TOKEN"] == "" and check["env"]["GH_TOKEN"] == ""
+    assert "git checkout -q -- . && git clean -fdq" in check["run"] and "summary.md" in check["run"]
+    names = list(steps)
+    assert names.index("Author answers the findings") < names.index("Check the author's changes") \
+        < names.index("Open the fix PR into the reviewed PR's branch")
+    assert '--head-ref "$HEAD_REF"' in steps["Author answers the findings"]["run"]

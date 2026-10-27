@@ -104,6 +104,10 @@ schedules: []
 # Written in the repo, so never credentials (names with TOKEN, KEY, SECRET, AUTH or PASSWORD are refused).
 agent_env: {}
 
+# Limit what the author may change when answering a review of PRs on some branches (globs; others are undone).
+scopes: []
+#  - {branch_prefixes: [research/], allowed: ["strategies/*/card.yaml", "docs/IDEAS.md"]}
+
 context:
   pr:
     always: [REVIEW.md, reviews/decisions.md]       # plus the diff, changed files and the files that import them

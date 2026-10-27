@@ -44,6 +44,17 @@ def protected_paths(cfg: dict) -> list[str]:
     return out
 
 
+def scope_for(cfg: dict, head_ref: str | None) -> list[str] | None:
+    """`scopes` in the config: on PRs whose branch starts with one of a scope's branch_prefixes, the author may only
+    change files matching its `allowed` globs when answering a review (others are undone). None: no limit beyond
+    the protected paths."""
+    ref = head_ref or ""
+    for s in cfg.get("scopes") or []:
+        if any(ref.startswith(p) for p in s.get("branch_prefixes", [])):
+            return list(s.get("allowed", []))
+    return None
+
+
 SECRET_LIKE = ("TOKEN", "KEY", "SECRET", "AUTH", "PASSWORD")
 
 
