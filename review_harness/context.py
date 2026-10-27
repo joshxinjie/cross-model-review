@@ -151,14 +151,14 @@ def find_dependents(root: Path, changed: list[str], limit: int = MAX_DEPENDENTS)
     return found
 
 
-# Always-included files that belong to the review process, not to the work under review (config.protected_paths):
-# read from the project's trusted checkout (main), so a pull request cannot rewrite the decision log the reviewer is
-# told to respect.
+# Always-included files that belong to the review process itself (instructions, review/, the decision log; not the
+# project's own `protected` extras, which are part of the work): read from the project's trusted checkout (main), so
+# a pull request cannot rewrite the decision log the reviewer is told to respect.
 def always_source(rel: str, root: Path, trusted: Path | None, cfg: dict) -> Path:
     import fnmatch
     from .config import protected_paths
     hit = any(rel.startswith(p) or fnmatch.fnmatchcase(rel, p + ("*" if p.endswith("/") else ""))
-              for p in protected_paths(cfg))
+              for p in protected_paths(cfg, extras=False))
     return trusted if trusted is not None and hit else root
 
 

@@ -1622,3 +1622,9 @@ def test_protected_globs_are_undone_too(tmp_path):
     (work / "strategies" / "a" / "card.yaml").write_text("ok")
     assert RS.revert_protected(work, ["review/", "strategies/*/results/"]) == ["strategies/a/results/report.md"]
     assert (work / "strategies" / "a" / "card.yaml").exists()
+
+
+def test_only_the_review_process_files_come_from_main(tmp_path):
+    cfg = dict(CFG, protected=["docs/METHODOLOGY.md"])
+    assert C.always_source("reviews/decisions.md", tmp_path, ROOT, cfg) == ROOT
+    assert C.always_source("docs/METHODOLOGY.md", tmp_path, ROOT, cfg) == tmp_path   # the PR's version
