@@ -890,6 +890,10 @@ if mode == "401":
 if mode == "early":
     sys.stderr.write("error: unexpected argument '--ephemeral' found\n")
     sys.exit(2)
+if mode == "cap-always" or (mode == "cap" and 'model_reasoning_effort="high"' in args):
+    ev({"type": "error", "message": "Incomplete response returned, reason: max_output_tokens"})
+    ev({"type": "turn.failed", "error": {"message": "Incomplete response returned, reason: max_output_tokens"}})
+    sys.exit(1)
 if mode == "respond":                                         # the author edits the real checkout
     open("fix.txt", "w").write("the fix")
     open(os.path.join(os.environ["TMPDIR"], "t.txt"), "w").write("tmp is writable")
@@ -1178,6 +1182,36 @@ def test_no_github_token_or_credential_while_pr_requirements_install():         
     assert rf.index("--unset-all http.https://github.com/.extraheader") < rf.index("${{ inputs.install }}")
     block = rf[rf.index("      - name: Install the author's CLI and the PR's dependencies"):]
     assert 'GITHUB_TOKEN: ""' in block[:block.index("${{ inputs.install }}")]
+
+
+def test_codex_output_cap_retries_once_with_less_effort(tmp_path, monkeypatch):
+    efforts = []
+    real = CX.CodexProvider._run
+
+    def spy(self, cmd, *a, **kw):
+        efforts.append(next(c for c in cmd if c.startswith("model_reasoning_effort=")))
+        return real(self, cmd, *a, **kw)
+    monkeypatch.setattr(CX.CodexProvider, "_run", spy)
+    work = tmp_path / "work"
+    work.mkdir()
+    p = CX.CodexProvider(CFG["reviewers"]["gpt"], cwd=ROOT, work_dir=work, binary=fake_codex(tmp_path, "cap"),
+                         environ=codex_env_for(tmp_path))
+    steps = []
+    p.on_step = steps.append
+    c = p.complete("s", [{"role": "user", "content": "u"}], 10)
+    assert schema_errors(json.loads(c.text), SCHEMA) == []
+    assert efforts == ['model_reasoning_effort="high"', 'model_reasoning_effort="medium"']
+    assert "Output cap reached; retry with reasoning effort `medium`" in steps and p.effort == "medium"
+
+
+def test_codex_output_cap_without_a_lower_effort_is_explained(tmp_path):
+    reviewer = dict(CFG["reviewers"]["gpt"], reasoning_effort="low")
+    p = CX.CodexProvider(reviewer, cwd=ROOT, work_dir=tmp_path, binary=fake_codex(tmp_path, "cap-always"),
+                         environ=codex_env_for(tmp_path))
+    with pytest.raises(CX.OutputCapError, match="output cap for one response"):
+        p.complete("s", [{"role": "user", "content": "u"}], 10)
+    assert "output cap" in CX.explain([], "", 1, failed=["Incomplete response returned, reason: max_output_tokens"])
+    assert "usage limit" in CX.explain([], "", 1, failed=["429 Too Many Requests"])     # unchanged
 
 
 def test_codex_time_budget_is_shared_by_the_retry(tmp_path):                        # PR87-4-F3

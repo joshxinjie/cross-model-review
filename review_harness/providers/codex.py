@@ -47,6 +47,14 @@ RESPOND_HINT = ("You are working in the pull request's checkout with no network.
                 "accept and run the tests. You cannot commit or push (.git is read-only), and edits to the review "
                 "machinery are undone; the workflow commits your changes and opens the pull request.")
 LIMIT_FAILURE = re.compile(r"usage limit|rate limit|\b429\b|quota", re.I)
+# The model ran out of output tokens for one response (reasoning included) before the final answer. Codex has no
+# setting the harness passes for this, so the provider retries once with less reasoning (LOWER_EFFORT).
+OUTPUT_CAP = re.compile(r"max_output_tokens|max output tokens", re.I)
+LOWER_EFFORT = {"xhigh": "high", "high": "medium", "medium": "low"}
+
+
+class OutputCapError(RuntimeError):
+    """Codex stopped at the model's per-response output cap without a final answer."""
 
 
 # ---- schema: Codex binds the final answer with OpenAI structured outputs, which need a strict schema ------------------
@@ -133,6 +141,10 @@ def explain(messages: list[str], stderr: str, returncode, timed_out: bool = Fals
     if LIMIT_FAILURE.search(events):
         return ("The ChatGPT plan's Codex usage limit was reached; try again after it resets (`/status` in the "
                 f"Codex CLI shows when). Detail: {detail}")
+    if OUTPUT_CAP.search(events):
+        return ("Codex reached the model's output cap for one response before its final answer (long reasoning on a "
+                "large diff). Lower the reviewer's `reasoning_effort`, or review a smaller change, e.g. with "
+                f"`/review fable`. Detail: {detail}")
     return f"Codex exited with {returncode} without a final answer. Detail: {detail}"
 
 
@@ -230,6 +242,24 @@ class CodexProvider(Provider):
         self.on_step = None
 
     def complete(self, system: str, messages: list[dict], max_output_tokens: int) -> Completion:
+        """max_output_tokens is not used: the Codex CLI takes no per-run output limit. When the model hits its own
+        cap, retry once with one step less reasoning effort (the lower effort is kept for later calls in this run),
+        within the same time budget."""
+        try:
+            return self._attempt(system, messages, self.effort)
+        except OutputCapError:
+            lower = LOWER_EFFORT.get(self.effort or "")
+            if not lower:
+                raise
+            self.effort = lower
+            if self.on_step:
+                try:
+                    self.on_step(f"Output cap reached; retry with reasoning effort `{lower}`")
+                except Exception:  # noqa: BLE001 - progress is cosmetic
+                    pass
+            return self._attempt(system, messages, lower)
+
+    def _attempt(self, system: str, messages: list[dict], effort: str | None) -> Completion:
         retry = self.deadline is not None
         if not retry:
             self.deadline = time.monotonic() + self.timeout
@@ -267,7 +297,7 @@ class CodexProvider(Provider):
 
             prompt = f"# Instructions\n\n{system}\n\n{hint}\n\n# Task\n\n{flatten(messages)}"
             try:
-                result = self._run(build_command(self.binary, self.model, self.effort, str(schema_file),
+                result = self._run(build_command(self.binary, self.model, effort, str(schema_file),
                                                  str(last_file), str(work), self.mode, extra),
                                    prompt, codex_env(home, tmp, self.environ, self.extra_env), current_secrets, work,
                                    budget)
@@ -276,8 +306,11 @@ class CodexProvider(Provider):
             secrets = current_secrets()
             text = last_file.read_text().strip() if last_file.exists() else ""
         if not text:
-            raise RuntimeError(scrub(explain(result["errors"], result["stderr"], result["returncode"],
-                                             result["timed_out"], result["failed"]) + note, secrets))
+            message = scrub(explain(result["errors"], result["stderr"], result["returncode"],
+                                    result["timed_out"], result["failed"]) + note, secrets)
+            events = (result["failed"] or result["errors"] or [""])[-1]
+            capped = not result["timed_out"] and OUTPUT_CAP.search(events)
+            raise (OutputCapError if capped else RuntimeError)(message)
         try:
             text = json.dumps(strip_nulls(json.loads(text)))
         except json.JSONDecodeError:
