@@ -433,7 +433,8 @@ def test_claude_code_provider_runs_cli_and_parses(monkeypatch):
 
     def fake_run(cmd, **kw):
         seen.update(cmd=cmd, **kw)
-        assert open(cmd[cmd.index("--append-system-prompt-file") + 1]).read() == "SYS"
+        system = open(cmd[cmd.index("--append-system-prompt-file") + 1]).read()
+        assert system.startswith("SYS\n\n## Running commands") and "python -m pytest -q" in system
         return Proc()
 
     p = CCP.ClaudeCodeProvider({"model": "claude-fable-5-1", "secret": "CLAUDE_CODE_OAUTH_TOKEN"}, run=fake_run)
@@ -1736,3 +1737,29 @@ def test_response_record_is_archived_even_if_opening_the_pr_fails():
     steps = {s.get("name"): s for s in wf["jobs"]["respond"]["steps"]}
     assert "!cancelled()" in steps["Archive the response record"]["if"]
     assert 'echo "$BRANCH" > "$RUNNER_TEMP/pushed_branch"' in steps["Open the fix PR into the reviewed PR's branch"]["run"]
+
+
+def test_claude_code_allows_tests_with_the_projects_settings_in_front():
+    """Reviewers copied the documented `TRADELAB_PROVIDER=synthetic python -m pytest -q`; Claude Code matched rules on
+    the command's text and denied it, so every Opus review of trading-lab #32, #35 and #37 said the tests could not
+    run."""
+    settings = {"TRADELAB_PROVIDER": "synthetic"}
+    cmd = CCP.build_command("claude-opus-5-5", "/tmp/s.md", SCHEMA, 40, settings=settings)
+    allowed = cmd[cmd.index("--allowedTools") + 1: cmd.index("--disallowedTools")]
+    for rule in ("Bash(python -m pytest *)", "Bash(pytest *)", "Bash(TRADELAB_PROVIDER=synthetic python -m pytest *)",
+                 "Bash(TRADELAB_PROVIDER=synthetic pytest *)"):
+        assert rule in allowed
+    assert not any(r.startswith("Bash(TRADELAB_PROVIDER=synthetic python *") for r in allowed)   # review: tests only
+    respond = CCP.build_command("m", "/tmp/s.md", RESP_SCHEMA, 1, mode="respond", settings=settings)
+    r_allowed = respond[respond.index("--allowedTools") + 1: respond.index("--disallowedTools")]
+    assert "Bash(TRADELAB_PROVIDER=synthetic python *)" in r_allowed
+    two = CCP.env_prefixed_rules(["Bash(pytest *)"], {"A": "1", "B": "2"})
+    assert two == ["Bash(A=1 pytest *)", "Bash(B=2 pytest *)", "Bash(A=1 B=2 pytest *)"]
+    assert CCP.env_prefixed_rules(["Bash(pytest *)"], {}) == []
+
+
+def test_claude_code_hint_names_the_runnable_commands_and_settings():
+    hint = CCP.command_hint("review", {"TRADELAB_PROVIDER": "synthetic"})
+    assert "python -m pytest -q" in hint and "`TRADELAB_PROVIDER=synthetic`" in hint and "do not put them" in hint
+    assert "do not report that the tests fail" in hint
+    assert "commit" in CCP.command_hint("respond", None) and "already in your environment" not in CCP.command_hint("review", {})

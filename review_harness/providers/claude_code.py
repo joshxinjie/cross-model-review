@@ -22,10 +22,11 @@ from ..config import ROOT, agent_env_extra, load_config, protected_paths, schema
 from .base import Completion, Provider
 
 READ_TOOLS = ["Read", "Grep", "Glob"]
-SAFE_COMMANDS = ["Bash(git diff *)", "Bash(git log *)", "Bash(git show *)",
-                 "Bash(python -m pytest *)", "Bash(ls *)"]
+TEST_COMMANDS = ["python -m pytest", "python3 -m pytest", "pytest"]
+SAFE_COMMANDS = ["Bash(git diff *)", "Bash(git log *)", "Bash(git show *)", "Bash(ls *)",
+                 *(f"Bash({c} *)" for c in TEST_COMMANDS)]
 EDIT_TOOLS = ["Edit", "Write"]
-RESPOND_COMMANDS = ["Bash(git status *)", "Bash(python *)"]
+RESPOND_COMMANDS = ["Bash(git status *)", "Bash(python *)", "Bash(python3 *)"]
 # The author may not change how reviews work or what the reviewer decided (config.protected_paths); respond.py also
 # reverts any such change.
 
@@ -59,6 +60,33 @@ def cli_schema(schema: dict) -> dict:
     return {k: v for k, v in schema.items() if k not in ("$schema", "$id")}
 
 
+def env_prefixed_rules(commands: list[str], settings: dict | None) -> list[str]:
+    """The same commands written with the project's agent_env settings in front (`TRADELAB_PROVIDER=synthetic python
+    -m pytest -q`). The settings are already in the agent's environment, but models copy the repo's documented
+    command line, and Claude Code matches rules on the command's text: the prefixed form was denied, so reviewers
+    reported that they could not run the tests (trading-lab #32, #35, #37)."""
+    if not settings:
+        return []
+    prefixes = [f"{k}={v}" for k, v in settings.items()]
+    if len(prefixes) > 1:
+        prefixes.append(" ".join(prefixes))
+    return [f"Bash({p} {c[len('Bash('):]}" for p in prefixes for c in commands]
+
+
+def command_hint(mode: str, settings: dict | None) -> str:
+    """Appended to the system prompt: which command lines run, so the agent doesn't spend turns on denied ones."""
+    tests = "`python -m pytest -q` (or a file, or `-k`)"
+    have = (" These settings are already in your environment: " + ", ".join(f"`{k}={v}`" for k, v in settings.items())
+            + "; do not put them in front of commands.") if settings else ""
+    if mode == "respond":
+        return ("\n\n## Running commands\n\nRun the tests with " + tests + "; you may also run `python ...` scripts and "
+                "read-only git commands (`git diff`, `git log`, `git show`, `git status`)." + have + " You cannot "
+                "commit, push, reset, check out or delete files; the workflow commits your edits.\n")
+    return ("\n\n## Running commands\n\nYou may run the tests with " + tests + " and read-only git commands (`git diff`, "
+            "`git log`, `git show`), plus `ls`. Anything else is denied without asking." + have
+            + " If a command is denied, say what you could not run; do not report that the tests fail.\n")
+
+
 def protected_rules(protected) -> list[str]:
     rules = []
     for path in protected:
@@ -68,12 +96,16 @@ def protected_rules(protected) -> list[str]:
 
 
 def build_command(model: str, system_file: str, schema: dict, max_turns: int, mode: str = "review",
-                  protected=(".github/", "review/", "reviews/", "REVIEW.md")) -> list[str]:
+                  protected=(".github/", "review/", "reviews/", "REVIEW.md"), settings: dict | None = None) -> list[str]:
+    tests = [f"Bash({c} *)" for c in TEST_COMMANDS]
     if mode == "review":
-        tools, allowed = READ_TOOLS + ["Bash", "WebSearch"], READ_TOOLS + SAFE_COMMANDS + ["WebSearch"]
+        tools = READ_TOOLS + ["Bash", "WebSearch"]
+        allowed = READ_TOOLS + SAFE_COMMANDS + env_prefixed_rules(tests, settings) + ["WebSearch"]
         denied = ["Edit", "Write", "NotebookEdit", "WebFetch"]
     elif mode == "respond":
-        tools, allowed = READ_TOOLS + EDIT_TOOLS + ["Bash"], READ_TOOLS + EDIT_TOOLS + SAFE_COMMANDS + RESPOND_COMMANDS
+        tools = READ_TOOLS + EDIT_TOOLS + ["Bash"]
+        allowed = (READ_TOOLS + EDIT_TOOLS + SAFE_COMMANDS + RESPOND_COMMANDS
+                   + env_prefixed_rules(tests + RESPOND_COMMANDS[1:], settings))
         denied = ["NotebookEdit", "WebSearch", "WebFetch", "Bash(git commit *)", "Bash(git push *)", "Bash(git reset *)",
                   "Bash(git checkout *)", "Bash(rm *)", *protected_rules(protected)]
     else:
@@ -210,9 +242,10 @@ class ClaudeCodeProvider(Provider):
             raise RuntimeError(f"Claude Code has used its {self.timeout // 60}-minute budget for this run (shared "
                                "by the retry); no time is left for another attempt.")
         with tempfile.NamedTemporaryFile("w", suffix=".md", delete=False) as fh:
-            fh.write(system)
+            fh.write(system + command_hint(self.mode, self.extra_env))
             system_file = fh.name
-        cmd = build_command(self.model, system_file, self.schema, self.max_turns, self.mode, self.protected)
+        cmd = build_command(self.model, system_file, self.schema, self.max_turns, self.mode, self.protected,
+                            self.extra_env)
         try:
             if self.run is subprocess.run:          # the real CLI: stream, so progress can be shown live
                 i = cmd.index("--output-format")
