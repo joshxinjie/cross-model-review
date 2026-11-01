@@ -10,6 +10,7 @@ but not fetch pages; the author gets neither.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -81,7 +82,12 @@ def command_hint(mode: str, settings: dict | None) -> str:
     if mode == "respond":
         return ("\n\n## Running commands\n\nRun the tests with " + tests + "; you may also run `python ...` scripts and "
                 "read-only git commands (`git diff`, `git log`, `git show`, `git status`)." + have + " You cannot "
-                "commit, push, reset, check out or delete files; the workflow commits your edits.\n")
+                "commit, push, reset, check out or delete files; the workflow commits your edits.\n\n"
+                "To run a code sketch or a stub, use this form from the start: write it to a file under `/tmp` with "
+                "the Write tool (for example `/tmp/check/run.py`), then run `python /tmp/check/run.py` as one command. "
+                "Don't write scratch files in the repository: they would end up in the fix PR. If a command is "
+                "denied, don't repackage it to get round the denial: report that check as `blocked` in "
+                "`verification` and say what was denied.\n")
     return ("\n\n## Running commands\n\nYou may run the tests with " + tests + " and read-only git commands (`git diff`, "
             "`git log`, `git show`), plus `ls`. Anything else is denied without asking." + have
             + " If a command is denied, say what you could not run; do not report that the tests fail.\n")
@@ -134,6 +140,44 @@ def flatten(messages: list[dict]) -> str:
     return "".join(parts)
 
 
+SECRET_PATTERNS = [
+    re.compile(r"\b(?:gh[opsur]_|github_pat_)[A-Za-z0-9_]{16,}"),                 # GitHub tokens
+    re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}"),                               # API keys
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),                                # Slack tokens
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                          # AWS key IDs
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),                           # Authorization: Bearer …
+    re.compile(r"[A-Za-z0-9+/_=-]{40,}"),                                          # any long opaque string
+]
+SECRET_ASSIGNMENT = re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|AUTH|PASSWORD|PASSWD)[A-Z0-9_]*)=(\S+)")
+DENIAL_LIMIT = 200
+
+
+def redact(text: str, limit: int = DENIAL_LIMIT) -> str:
+    """One line for a record or a PR: secrets masked first, then whitespace folded, then cut. Cutting alone is not
+    redaction: a token's first characters would survive it."""
+    text = SECRET_ASSIGNMENT.sub(lambda m: f"{m.group(1)}=***", str(text))
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("***", text)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def denials_from(data: dict) -> list[dict]:
+    """The CLI result's `permission_denials` as [{"tool", "command"}], redacted. Missing or malformed: []."""
+    out = []
+    raw = data.get("permission_denials")
+    if not isinstance(raw, list):
+        return out
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        tool = str(d.get("tool_name") or d.get("tool") or "?")
+        inp = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+        what = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
+        out.append({"tool": redact(tool, 40), "command": redact(what)})
+    return out
+
+
 def parse_output(stdout: str) -> Completion:
     """Read the CLI's JSON result; prefer the schema-validated object when present."""
     data = json.loads(stdout)
@@ -145,7 +189,7 @@ def parse_output(stdout: str) -> Completion:
     usage = data.get("usage") or {}
     tokens_in = sum(int(usage.get(k, 0) or 0) for k in
                     ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
-    return Completion(text, tokens_in, int(usage.get("output_tokens", 0) or 0))
+    return Completion(text, tokens_in, int(usage.get("output_tokens", 0) or 0), denials_from(data))
 
 
 def describe(name: str, args: dict, work_dir: Path) -> str | None:

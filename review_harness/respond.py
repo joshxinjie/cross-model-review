@@ -290,7 +290,7 @@ def invalidate_verification(resp: dict, reverted: list[str]) -> dict:
 
 def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[str], already: list[str],
                    pr: int | None, author_model: str, decision_log: str = "reviews/decisions.md",
-                   closing: str = "") -> str:
+                   closing: str = "", denials: list[dict] | None = None) -> str:
     counts = {d: sum(1 for r in resp["responses"] if r["decision"] == d) for d in ICON}
     head = (f"### Author response to the cross-model review\n"
             f"Author `{author_model}` answered {len(resp['responses'])} finding"
@@ -321,6 +321,15 @@ def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[
     if reverted:
         notes.append("edits the author may not make (review machinery, or outside this PR's scope) were undone: "
                      + ", ".join(reverted))
+    if denials:
+        shown = denials[:10]
+        verification += (f"**Denied commands ({len(denials)})**: the author's sandbox refused these. They are not gaps "
+                         "by themselves: a finding checked another way still shows its result, and one that could "
+                         "not be checked is listed as a gap above.\n\n"
+                         + "\n".join(f"- {d.get('tool', '?')}: `{str(d.get('command', '')).replace('`', chr(39))}`"
+                                      for d in shown)
+                         + (f"\n- …and {len(denials) - len(shown)} more (in the response record)" if len(denials) > 10
+                            else "") + "\n\n")
     return (head + f"\n**Author's test run: {tests}** — {cell(t['detail'], 200)}\n\n" + verification
             + "<details><summary>Each finding</summary>\n\n| Finding | Decision | Verified | Reason |\n"
             "|---|---|---|---|\n"
@@ -349,9 +358,10 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
     allowed = scope_for(cfg, head_ref, title)
     system, user = build_prompt(root, cfg, envelope, pending, pr, base, author, allowed)
     messages = [{"role": "user", "content": user}]
-    errors, resp = ["not run"], None
+    errors, resp, denials = ["not run"], None, []
     for _ in range(2):                      # one retry: the author's edits stay; only its answer is corrected
         c = provider.complete(system, messages, cfg["limits"]["max_output_tokens"])
+        denials += getattr(c, "denials", None) or []          # kept across the retry
         try:
             resp = json.loads(c.text)
             errors = response_errors(resp, schema, pending)
@@ -362,7 +372,7 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
         messages += [{"role": "assistant", "content": c.text}, {"role": "user", "content": retry_message(errors)}]
     reverted = revert_protected(work_dir, cfg_protected(cfg), allowed)
     if errors:
-        return {"status": "invalid", "errors": errors, "reverted": reverted}
+        return {"status": "invalid", "errors": errors, "reverted": reverted, "denials": denials}
     resp = invalidate_verification(resp, reverted)
     rows = decision_rows(resp["responses"], envelope, review_name, row_prefix(log_text, review_name),
                          date or today_sgt(), fixed_in)
@@ -371,8 +381,9 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
     if not copy.exists():
         copy.write_text(json.dumps(envelope, indent=1, ensure_ascii=False) + "\n")
     return {"status": "done", "response": resp, "rows": rows, "reverted": reverted, "already": already,
+            "denials": denials,
             "summary": render_summary(resp, envelope, review_name, reverted, already, pr, author["model"],
-                                      cfg["decision_log"], footer(cfg))}
+                                      cfg["decision_log"], footer(cfg), denials)}
 
 
 def cfg_protected(cfg: dict) -> list[str]:
@@ -435,7 +446,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.out:
         Path(args.out).write_text(json.dumps({"review": name, "author": author["model"], "date": today_sgt(),
                                               "harness": os.environ.get("REVIEW_HARNESS_COMMIT", ""),
-                                              "response": result["response"], "reverted": result["reverted"]},
+                                              "response": result["response"], "reverted": result["reverted"],
+                                              "denials": result.get("denials", [])},
                                              indent=1, ensure_ascii=False) + "\n")
     print(json.dumps({"rows": len(result["rows"]), "reverted": result["reverted"]}))
     return 0
