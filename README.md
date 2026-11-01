@@ -43,8 +43,12 @@ The harness reads a repo's settings from its default branch, so land them in two
    `generated_paths` lists files your own automation commits to PRs (e.g. backtest results): commits touching only
    those don't make a review stale, so `/respond` can still answer it.
 3. **Adjust the caller workflows**: the `install` command (e.g. `pip install -e ".[dev]"`) so reviewers can run your
-   tests, the `label`, and optionally `check` in `respond.yml`: a command run after the author's changes (tests, a PR
-   guard) whose result goes in the fix PR, since GitHub runs no checks on PRs a workflow opens.
+   tests, the `label`, and `check` in `respond.yml`: a command run after the author's changes (tests, a PR guard)
+   whose result goes in the fix PR, because checks on a PR the workflow opens with its own token may not start, or
+   may wait for your approval. The fix PR opens as a normal PR only when `check` exits 0; a failed check, no `check`,
+   or a check that did not finish opens a draft with the reason first. The author also reports, per finding, how it
+   verified the fix (`ran`, `read`, `none`) and the outcome; anything not shown to pass is listed as a verification
+   gap.
 4. **Repo settings → Actions → General**: allow GitHub Actions to create pull requests (project reviews and fix
    PRs are pull requests).
 5. **Secrets** (repo → Settings → Secrets and variables → Actions):

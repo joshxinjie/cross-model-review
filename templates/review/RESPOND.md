@@ -27,13 +27,18 @@ in `reason` and change code only if the answer shows a problem.
    hand-edit a generated file.
 4. Add or update a test for every code fix, run the affected tests, then the whole suite once at the end. Report the
    result honestly in `tests`.
-5. Record the response where the project records its changes (a journal entry, changelog or similar), listing each
+5. For each finding, report in `verification` how you checked its fix and what that showed, separately: the method
+   is `ran` (you executed code or tests that exercise it), `read` (you checked it by reading, which is enough for a
+   documentation fix) or `none`; the outcome is `passed`, `failed`, `blocked` (a check that was needed could not run,
+   for example a command was refused) or `unknown`. `ran` is not `passed`. Never report a check you could not run as
+   passed: say `blocked` and what was missing in `detail`. A passing suite does not verify a fix it does not exercise.
+6. Record the response where the project records its changes (a journal entry, changelog or similar), listing each
    finding and its decision in one line.
-6. You cannot change the review machinery (`REVIEW.md`, `review/`, `reviews/`, `.github/`, and any `protected` path
+7. You cannot change the review machinery (`REVIEW.md`, `review/`, `reviews/`, `.github/`, and any `protected` path
    in the config) or commit or push; the workflow writes the decision log and opens the pull request from your edits.
 
 ## Output
 
 Return one JSON object matching the schema: one entry per finding ID given (no more, no fewer), each with the
-decision, a reason a reader can check, and what you changed (files, in one line); the test result; and a summary
-that fits on a phone screen (counts per decision, then anything the owner should look at first).
+decision, a reason a reader can check, what you changed (files, in one line) and how you verified it; the test
+result; and a summary that fits on a phone screen (counts per decision, then anything the owner should look at first).

@@ -140,6 +140,12 @@ def response_errors(resp: dict, schema: dict, pending: list[str]) -> list[str]:
         errs.append(f"answers for findings not asked about: {', '.join(extra)}")
     if dup:
         errs.append(f"more than one answer for: {', '.join(dup)}")
+    unchecked = [r["finding_id"] for r in resp["responses"]
+                 if (r.get("verification") or {}).get("method") == "none"
+                 and r["verification"].get("outcome") in ("passed", "failed")]
+    if unchecked:
+        errs.append(f"verification method `none` cannot have outcome passed or failed (use blocked or unknown): "
+                    f"{', '.join(unchecked)}")
     return errs
 
 
@@ -231,6 +237,32 @@ def build_prompt(root: Path, cfg: dict, envelope: dict, pending: list[str], pr: 
     return system, user
 
 
+METHOD = {"ran": "▶️ ran", "read": "👀 read", "none": "— not checked"}
+OUTCOME = {"passed": "✅ passed", "failed": "❌ failed", "blocked": "🚧 blocked", "unknown": "❔ unknown"}
+
+
+def verification_text(r: dict) -> str:
+    v = r.get("verification")
+    if not v:                                   # records from before the field, or a project's own output schema
+        return "❔ not reported"
+    return f"{METHOD.get(v.get('method'), v.get('method'))} · {OUTCOME.get(v.get('outcome'), v.get('outcome'))}"
+
+
+def verification_gap(r: dict) -> str | None:
+    """Why a change the author made is not shown to work, or None. Only accepted or modified findings change files;
+    a reject or defer changes nothing, so it has no gap. Unknown is never treated as passed."""
+    if r["decision"] not in ("accept", "modify"):
+        return None
+    v = r.get("verification")
+    if not v:
+        return "verification not reported"
+    if v.get("method") == "none":
+        return "not checked" + (f" ({v.get('outcome')})" if v.get("outcome") in ("blocked", "unknown") else "")
+    if v.get("outcome") != "passed":
+        return f"{v.get('method')}, outcome {v.get('outcome') or 'unknown'}"
+    return None
+
+
 def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[str], already: list[str],
                    pr: int | None, author_model: str, decision_log: str = "reviews/decisions.md",
                    closing: str = "") -> str:
@@ -243,16 +275,30 @@ def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[
             + resp["summary"] + "\n")
     t = resp["tests"]
     tests = ("✅ tests pass" if t["passed"] else "❌ tests fail") if t["ran"] else "⚠️ tests not run"
-    rows = "\n".join(f"| {r['finding_id']} | {ICON[r['decision']]} {r['decision']} | {cell(r['reason'], 200)} |"
-                     for r in sorted(resp["responses"], key=lambda r: int(r["finding_id"][1:])))
+    ordered = sorted(resp["responses"], key=lambda r: int(r["finding_id"][1:]))
+    rows = "\n".join(f"| {r['finding_id']} | {ICON[r['decision']]} {r['decision']} | {verification_text(r)} | "
+                     f"{cell(r['reason'], 200)} |" for r in ordered)
+    gaps = [(r, verification_gap(r)) for r in ordered]
+    gaps = [(r, g) for r, g in gaps if g]
+    if gaps:
+        verification = (f"**⚠️ Verification gaps ({len(gaps)})**: the author did not show these changes work.\n\n"
+                        + "\n".join(f"- {r['finding_id']} ({r['decision']}): {g}"
+                                     + (f" — {cell((r.get('verification') or {}).get('detail', ''), 200)}"
+                                        if (r.get("verification") or {}).get("detail") else "")
+                                     for r, g in gaps) + "\n\n")
+    elif any(r["decision"] in ("accept", "modify") for r in ordered):
+        verification = "**Verification:** the author checked every change it made (ran or read), with no gaps.\n\n"
+    else:
+        verification = ""
     notes = []
     if already:
         notes.append("already decided earlier, skipped: " + ", ".join(already))
     if reverted:
         notes.append("edits the author may not make (review machinery, or outside this PR's scope) were undone: "
                      + ", ".join(reverted))
-    return (head + f"\n**{tests}** — {cell(t['detail'], 200)}\n\n"
-            "<details><summary>Each finding</summary>\n\n| Finding | Decision | Reason |\n|---|---|---|\n"
+    return (head + f"\n**Author's test run: {tests}** — {cell(t['detail'], 200)}\n\n" + verification
+            + "<details><summary>Each finding</summary>\n\n| Finding | Decision | Verified | Reason |\n"
+            "|---|---|---|---|\n"
             + rows + "\n</details>\n\n"
             + ("<sub>" + " · ".join(notes) + "</sub>\n\n" if notes else "")
             + f"Merging this pull request accepts these decisions; they are logged in `{decision_log}`. "

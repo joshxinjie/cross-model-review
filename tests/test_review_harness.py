@@ -481,8 +481,10 @@ def env_with(findings):
             "review": review(verdict=derive_verdict("pr", findings), findings=findings)}
 
 
-def answer(fid, decision="accept", reason="right", changes="x.py"):
-    return {"finding_id": fid, "decision": decision, "reason": reason, "changes": changes}
+def answer(fid, decision="accept", reason="right", changes="x.py", method="ran", outcome="passed",
+           detail="pytest tests/test_x.py"):
+    return {"finding_id": fid, "decision": decision, "reason": reason, "changes": changes,
+            "verification": {"method": method, "outcome": outcome, "detail": detail}}
 
 
 def resp_json(answers, passed=True):
@@ -1643,7 +1645,8 @@ def test_respond_workflow_checks_the_authors_changes_without_a_token():
     steps = {s.get("name"): s for s in wf["jobs"]["respond"]["steps"]}
     check = steps["Check the author's changes"]
     assert check["env"]["GITHUB_TOKEN"] == "" and check["env"]["GH_TOKEN"] == ""
-    assert "git checkout -q -- . && git clean -fdq" in check["run"] and "summary.md" in check["run"]
+    assert "git checkout -q -- . && git clean -fdq" in check["run"]
+    assert 'echo "code=$code" >> "$GITHUB_OUTPUT"' in check["run"]          # the result goes to the fix PR (A2)
     names = list(steps)
     assert names.index("Author answers the findings") < names.index("Check the author's changes") \
         < names.index("Open the fix PR into the reviewed PR's branch")
