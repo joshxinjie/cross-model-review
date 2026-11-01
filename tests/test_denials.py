@@ -21,8 +21,8 @@ def test_denials_are_read_from_the_cli_result_and_tolerate_missing_fields():
         {"tool_name": "Write", "tool_input": {"file_path": "/etc/passwd"}},
         {"tool_name": "Bash"},                                       # no input
         "not a dict", 7]))
-    assert c.denials == [{"tool": "Bash", "command": "mkdir -p /tmp/sim && cat > /tmp/sim/s.py"},
-                         {"tool": "Write", "command": "/etc/passwd"}, {"tool": "Bash", "command": ""}]
+    assert c.denials == [{"tool": "Bash", "command": "mkdir -p *** && cat > ***"},
+                         {"tool": "Write", "command": "***"}, {"tool": "Bash", "command": ""}]
     assert CC.parse_output(cli_result()).denials == []               # field absent (older CLI, Codex)
     assert CC.parse_output(cli_result("oops")).denials == []          # malformed
     assert Completion("x").denials == []
@@ -127,14 +127,16 @@ def test_credentials_in_denied_commands_never_survive(cmd):
 
 
 @pytest.mark.parametrize("cmd, expect", [
-    ("python -I /tmp/check/run.py", "python -I /tmp/check/run.py"),
-    ("python -m pytest -q 2>&1 | tail -5", "python -m pytest -q 2>&1 | tail -5"),
+    ("python -I /tmp/check/run.py", "python -I ***"),
+    ("python -m pytest -q 2>&1 | tail -5", "python -m *** -q 2>&1 | tail -5"),
     ("mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<'EOF'\nimport os\nprint(1)\nEOF",
-     "mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<… (+3 more lines)"),
-    ("git clone https://github.com/o/r", "git clone https://github.com/o/r"),
+     "mkdir -p *** && cat > *** <<… (+3 more lines)"),
+    ("git clone https://github.com/o/r", "git *** ***"),
     ('echo "unbalanced', "(command not shown: it could not be parsed safely)"),
+    ("python - <<'EOF'\nx\nEOF", "python - <<… (+2 more lines)"),
 ])
-def test_useful_diagnostics_survive(cmd, expect):
+def test_the_shape_survives_and_values_do_not(cmd, expect):
+    """What B6 needs from a denial: which programs, flags and shell forms (chains, redirects, heredocs) were used."""
     assert CC.safe_command(cmd) == expect
 
 
@@ -160,7 +162,7 @@ def test_the_provider_keeps_denials_from_failed_attempts(monkeypatch):
     with pytest.raises(CC.CLIError):
         p.complete("s", [{"role": "user", "content": "u"}], 100)
     p.complete("s", [{"role": "user", "content": "u"}], 100)
-    assert [d["command"] for d in p.denials] == ["mkdir -p /tmp/a", "cat > /tmp/a/b"]
+    assert [d["command"] for d in p.denials] == ["mkdir -p ***", "cat > ***"]
 
 
 def test_a_failed_response_still_reports_its_denials(tmp_path, monkeypatch):
@@ -252,14 +254,6 @@ def test_a_value_is_hidden_whatever_it_looks_like(cmd, secret):
     assert secret not in out, (cmd, out)
 
 
-def test_only_understood_forms_show_arguments():
-    assert CC.safe_command("cat build.txt") == "cat build.txt"                     # a file tool's path
-    assert CC.safe_command("python -m build") == "python -m ***"                   # not a known module
-    assert CC.safe_command("python -m pytest tests/test_x.py -k f") == "python -m pytest tests/test_x.py -k ***"
-    assert CC.safe_command("unknowntool sub arg --flag val") == "unknowntool *** *** --flag ***"
-    assert CC.safe_command("git log --oneline -3") == "git log --oneline ***"     # -3's role isn't known for git
-
-
 # ---- GPT Sol's re-check at c89fb64: interpreter options end at code, module or script --------------------------------
 
 @pytest.mark.parametrize("cmd, secret", [
@@ -275,9 +269,46 @@ def test_arguments_after_code_module_or_script_are_hidden(cmd, secret):
     assert secret not in CC.safe_command(cmd), CC.safe_command(cmd)
 
 
-def test_interpreter_option_transitions():
-    assert CC.safe_command("python -I /tmp/check/run.py") == "python -I /tmp/check/run.py"
-    assert CC.safe_command("python -m pytest tests/t.py -k x") == "python -m pytest tests/t.py -k ***"
-    assert CC.safe_command("python -c x a.py") == "python -c *** ***"
-    assert CC.safe_command("python x.py y.py -c z") == "python x.py *** -c ***"
-    assert CC.safe_command("python - a.py") == "python - ***"
+# ---- GPT Sol's re-check at 0a7d429: attached options fail closed ------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    f"python -c'import sys; print(len(sys.argv[1]))' {FAKE}.py",   # code attached to -c (CPython accepts it)
+    f"python -mbuild {FAKE}.py",                                    # module attached to -m
+    f"python -mpytest {FAKE}.py",
+    f"python -Wignore x.py {FAKE}",                                 # value attached to -W
+    f"python -Xdev {FAKE}.py",
+    f"python --unknown {FAKE}.py",                                  # an option the view doesn't know
+    f"python -m pytest -kfoo {FAKE}.py",                            # attached option inside pytest's arguments
+    f"python -m pytest --weird {FAKE}.py",
+    f"pytest -kfoo {FAKE}.py",
+    f"cat -Z {FAKE}",
+    f"git --work-tree={FAKE} status",
+])
+def test_unrecognised_or_attached_options_hide_every_argument(cmd):
+    out = CC.safe_command(cmd)
+    assert FAKE not in out, out
+
+
+
+
+# ---- shape only (Xin Jie's decision after GPT Sol's re-checks of #10) --------------------------------------------------
+
+@pytest.mark.parametrize("cmd, expect", [
+    ("python -m pytest tests/t.py -k x", "python -m *** *** -k ***"),
+    (f"PASSWORD='a b {FAKE}' python x.py", "PASSWORD=*** python ***"),
+    (f"./{FAKE} -x", "*** -x"),                                # a program given as a path is hidden too
+    (f"/usr/bin/env {FAKE}=1 python", "*** *** ***"),
+    (f"cat {FAKE} | grep -n x > out.txt 2>&1", "cat *** | grep -n *** > *** 2>&1"),
+    ("python", "python"),
+    ("", ""),
+])
+def test_only_program_names_flags_and_operators_are_shown(cmd, expect):
+    assert CC.safe_command(cmd) == expect
+
+
+@pytest.mark.parametrize("word", ["hunter2", "hunter2.py", "/tmp/hunter2", "build", "status", "pytest",
+                                  "https://x.io/r", "a:b", "x=y"])
+def test_no_argument_value_is_ever_shown_whatever_it_looks_like(word):
+    for cmd in (f"tool {word}", f"tool -a {word}", f"tool --opt {word}", f"python -c x {word}", f"git {word}"):
+        assert CC.safe_command(cmd).split(" ", 1)[1].count("***") >= 1
+        assert word not in CC.safe_command(cmd).split(" ", 1)[1].replace("-a", "").replace("--opt", ""), cmd
