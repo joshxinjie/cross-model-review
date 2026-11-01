@@ -258,9 +258,34 @@ def verification_gap(r: dict) -> str | None:
         return "verification not reported"
     if v.get("method") == "none":
         return "not checked" + (f" ({v.get('outcome')})" if v.get("outcome") in ("blocked", "unknown") else "")
+    if v.get("invalidated_by_revert"):
+        return "outcome unknown, because edits were undone after the author checked"
     if v.get("outcome") != "passed":
         return f"{v.get('method')}, outcome {v.get('outcome') or 'unknown'}"
     return None
+
+
+def invalidate_verification(resp: dict, reverted: list[str]) -> dict:
+    """The author checked its work before the harness undid edits it may not make, so a reported result may rest on
+    changes that are gone. Which finding relied on which file is not known, so every accepted or modified finding's
+    outcome becomes unknown (a gap), keeping what the author reported in the detail. Rejects and defers changed
+    nothing and keep theirs. The configured `check` runs later, on what remains."""
+    if not reverted:
+        return resp
+    files = ", ".join(reverted[:5]) + (f" and {len(reverted) - 5} more" if len(reverted) > 5 else "")
+    out = dict(resp, responses=[])
+    for r in resp["responses"]:
+        r = dict(r)
+        if r["decision"] in ("accept", "modify"):
+            v = r.get("verification") or {}
+            said = f"{v.get('method', 'not reported')} · {v.get('outcome', 'not reported')}"
+            note = f"edits to {files} were undone after the author checked; it reported {said}"
+            if v.get("detail"):
+                note += f": {v['detail']}"
+            r["verification"] = {"method": v.get("method", "none"), "outcome": "unknown", "detail": note,
+                                 "invalidated_by_revert": True}
+        out["responses"].append(r)
+    return out
 
 
 def render_summary(resp: dict, envelope: dict, review_name: str, reverted: list[str], already: list[str],
@@ -338,6 +363,7 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
     reverted = revert_protected(work_dir, cfg_protected(cfg), allowed)
     if errors:
         return {"status": "invalid", "errors": errors, "reverted": reverted}
+    resp = invalidate_verification(resp, reverted)
     rows = decision_rows(resp["responses"], envelope, review_name, row_prefix(log_text, review_name),
                          date or today_sgt(), fixed_in)
     log_path.write_text(insert_rows(log_text, rows))
