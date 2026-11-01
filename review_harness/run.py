@@ -128,7 +128,7 @@ def _main(args) -> int:
         pack = build_pr_pack(repo, cfg, args.base, args.head, args.title, body, trusted)
         scope_tag = f"pr{args.pr}" if args.pr else "pr"
         from .rounds import round_for
-        pack["round"], pack["pr"] = round_for(repo, cfg, args.pr, args.full), args.pr
+        pack["round"], pack["pr"] = round_for(repo, cfg, args.pr, args.full, trusted or root), args.pr
     else:
         pack = build_project_pack(repo, cfg, args.areas, trusted)
         scope_tag = "project"

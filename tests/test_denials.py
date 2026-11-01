@@ -96,3 +96,114 @@ def resp_json_simple():
     return {"schema_version": 1, "summary": "s", "tests": {"ran": True, "passed": True, "detail": "ok"},
             "responses": [{"finding_id": "F1", "decision": "accept", "reason": "r", "changes": "x.py",
                            "verification": {"method": "ran", "outcome": "passed", "detail": "pytest"}}]}
+
+
+# ---- GPT Sol's review of #10 ------------------------------------------------------------------------------------------
+
+import pytest  # noqa: E402
+
+FAKE = "hunter2"           # synthetic credentials only
+
+
+@pytest.mark.parametrize("cmd", [
+    f'curl -H "Authorization: Basic dXNlcjp{FAKE}" https://x.io',
+    f"curl -u alice:{FAKE} https://x.io",
+    f"curl --user alice:{FAKE} https://x.io",
+    f'mysql --password "correct horse {FAKE}" db',
+    f"mysql --password={FAKE} db",
+    f"mysql -p{FAKE} db",
+    f"git clone https://alice:{FAKE}@github.com/o/r",
+    f"psql postgres://u:{FAKE}@db/x",
+    f"curl 'https://x.io/api?token={FAKE}'",
+    f"curl --data 'pw={FAKE}' https://x.io",
+    f"curl --header 'X-Api-Key: {FAKE}' https://x.io",
+    f'python -c "import os; os.environ[\'K\']=\'{FAKE}\'"',
+    f"cat > /tmp/s.py <<'EOF'\nPASSWORD = '{FAKE}'\nEOF",
+])
+def test_credentials_in_denied_commands_never_survive(cmd):
+    out = CC.safe_command(cmd)
+    assert FAKE not in out and "dXNlcj" not in out, out
+    assert len(out) <= CC.DENIAL_LIMIT
+
+
+@pytest.mark.parametrize("cmd, expect", [
+    ("python -I /tmp/check/run.py", "python -I /tmp/check/run.py"),
+    ("python -m pytest -q 2>&1 | tail -5", "python -m pytest -q 2>&1 | tail -5"),
+    ("mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<'EOF'\nimport os\nprint(1)\nEOF",
+     "mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<… (+3 more lines)"),
+    ("git clone https://github.com/o/r", "git clone https://github.com/o/r"),
+    ('echo "unbalanced', "echo ***"),
+])
+def test_useful_diagnostics_survive(cmd, expect):
+    assert CC.safe_command(cmd) == expect
+
+
+def test_denials_are_kept_when_the_cli_ends_in_an_error():
+    raw = cli_result([{"tool_name": "Bash", "tool_input": {"command": "python - <<'EOF'\nx\nEOF"}}],
+                     is_error=True, subtype="error_max_turns")
+    with pytest.raises(CC.CLIError) as e:
+        CC.parse_output(raw)
+    assert e.value.denials == [{"tool": "Bash", "command": "python - <<… (+2 more lines)"}]
+
+
+def test_the_provider_keeps_denials_from_failed_attempts(monkeypatch):
+    import subprocess
+
+    class Proc:
+        def __init__(self, out):
+            self.stdout, self.stderr, self.returncode = out, "", 0
+    outs = [cli_result([{"tool_name": "Bash", "tool_input": {"command": "mkdir -p /tmp/a"}}], is_error=True),
+            cli_result([{"tool_name": "Bash", "tool_input": {"command": "cat > /tmp/a/b"}}])]
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "x")
+    p = CC.ClaudeCodeProvider({"model": "m", "secret": "CLAUDE_CODE_OAUTH_TOKEN"},
+                              run=lambda *a, **k: Proc(outs.pop(0)), mode="respond")
+    with pytest.raises(CC.CLIError):
+        p.complete("s", [{"role": "user", "content": "u"}], 100)
+    p.complete("s", [{"role": "user", "content": "u"}], 100)
+    assert [d["command"] for d in p.denials] == ["mkdir -p /tmp/a", "cat > /tmp/a/b"]
+
+
+def test_a_failed_response_still_reports_its_denials(tmp_path, monkeypatch):
+    """Final invalid answer: main exits 2 before writing the record, so the failure message carries the denials."""
+    from test_review_harness import env_with, finding, scratch_repo
+    (tmp_path / "w").mkdir()
+    work = scratch_repo(tmp_path / "w")
+    review_file = tmp_path / "2026-11-01-pr7-gpt.json"
+    review_file.write_text(json.dumps(env_with([finding(id="F1")])))
+
+    class Bad:
+        model, on_step = "fake", None
+
+        def __init__(self, *a, **k):
+            self.denials = []
+
+        def complete(self, system, messages, max_output_tokens):
+            d = [{"tool": "Bash", "command": "python - <<… (+2 more lines)"}]
+            self.denials += d
+            return Completion("{not json", 1, 1, d)
+    monkeypatch.setattr(CC, "ClaudeCodeProvider", Bad)
+    monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "x")
+    monkeypatch.setattr("review_harness.progress.Progress.start", lambda self: None)
+    monkeypatch.setattr("review_harness.progress.Progress.finish", lambda self, ok, msg: None)
+    err = tmp_path / "err.txt"
+    code = RS.main(["--work-dir", str(work), "--review-file", str(review_file), "--pr", "7", "--fixed-in", "b",
+                    "--summary-out", str(tmp_path / "s.md"), "--error-file", str(err), "--author", "claude"])
+    assert code == 2
+    msg = err.read_text()
+    assert "failed validation" in msg and "Denied commands (2): Bash: python - <<… (+2 more lines)" in msg
+
+    class Crash(Bad):
+        def complete(self, system, messages, max_output_tokens):
+            self.denials += [{"tool": "Bash", "command": "mkdir -p /tmp/a"}]
+            raise CC.CLIError("Claude Code reported an error (error_max_turns): ", [])
+    monkeypatch.setattr(CC, "ClaudeCodeProvider", Crash)
+    with pytest.raises(CC.CLIError):
+        RS.main(["--work-dir", str(work), "--review-file", str(review_file), "--pr", "7", "--fixed-in", "b",
+                 "--summary-out", str(tmp_path / "s.md"), "--error-file", str(err), "--author", "claude"])
+    assert "Denied commands (1): Bash: mkdir -p /tmp/a" in err.read_text()
+
+
+def test_denials_note_is_short():
+    out = RS.denials_note([{"tool": "Bash", "command": "c"}] * 7)
+    assert out.startswith(" Denied commands (7): Bash: c") and out.endswith(" …")
+    assert RS.denials_note([]) == "" and RS.denials_note(None) == ""

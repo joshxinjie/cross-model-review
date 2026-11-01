@@ -53,7 +53,8 @@ def test_reviews_are_counted_from_contents_across_dates_and_reviewers():
     prior = R.prior_reviews(list(ARCHIVE), 20, read)
     assert [p["name"] for p in prior] == ["2026-11-01-pr20-gpt-5.json", "2026-11-01-pr20-fable.json",
                                           "2026-11-01-pr20-gpt.json", "2026-10-31-pr20-gpt.json"]
-    assert R.prior_reviews(list(ARCHIVE), 2, read) == [{"name": "2026-11-01-pr2-gpt.json", "commit": "x"}]
+    assert [(p["name"], p["commit"]) for p in R.prior_reviews(list(ARCHIVE), 2, read)] == [
+        ("2026-11-01-pr2-gpt.json", "x")]
     assert R.prior_reviews(list(ARCHIVE) + ["reviews/2026-10-31-pr20-gpt.json"], 20, read)[-1]["commit"] == "c1"
     assert R.prior_reviews([], 20, read) == []
 
@@ -70,11 +71,13 @@ def test_unreadable_history_means_unknown_never_fewer():
 
 
 def test_review_three_on_is_a_closing_review_only_when_opted_in():
-    two = [{"name": "b", "commit": "c2"}, {"name": "a", "commit": "c1"}]
+    two = [{"name": "b", "commit": "c2", "findings": []}, {"name": "a", "commit": "c1", "findings": []}]
     assert R.review_round(ON, 20, [])["closing"] is False                             # review 1
     assert R.review_round(ON, 20, two[1:])["closing"] is False                        # review 2
     third = R.review_round(ON, 20, two)
-    assert third == {"number": 3, "closing": True, "full_reviews": 2, "since": "c2"}
+    assert {k: third[k] for k in ("number", "closing", "full_reviews", "since")} == {
+        "number": 3, "closing": True, "full_reviews": 2, "since": "c2"}
+    assert [h["name"] for h in third["history"]] == ["a", "b"]                       # oldest first
     assert R.review_round(ON, 20, two, full_requested=True)["closing"] is False      # /review full
     assert R.review_round({"limits": {}}, 20, two * 5)["closing"] is False           # not opted in
     unknown = R.review_round(ON, 20, None)
@@ -102,14 +105,15 @@ def test_end_to_end_on_a_real_archive_branch(tmp_path):
         git(repo, "commit", "-q", "-m", f"add {i}")
     git(repo, "update-ref", "refs/remotes/origin/reviewer/archive", "HEAD")
     info = R.round_for(repo, ON, 20)
-    assert info == {"number": 5, "closing": True, "full_reviews": 2, "since": "c6"}
+    assert (info["number"], info["closing"], info["since"]) == (5, True, "c6") and len(info["history"]) == 4
     assert R.round_for(repo, ON, 20, full_requested=True)["closing"] is False
     assert R.round_for(repo, {"limits": {}}, 20)["number"] is None                   # not opted in: not even read
     (repo / "reviews" / "2026-11-02-pr20-gpt.json").write_text("{not json")
     git(repo, "add", "-A")
     git(repo, "commit", "-q", "-m", "broken")
     git(repo, "update-ref", "refs/remotes/origin/reviewer/archive", "HEAD")
-    assert R.round_for(repo, ON, 20) == {"number": None, "closing": False, "full_reviews": 2, "since": ""}
+    assert R.round_for(repo, ON, 20) == {"number": None, "closing": False, "full_reviews": 2, "since": "",
+                                         "history": []}
 
 
 def pack(round_info=None):
@@ -127,7 +131,7 @@ def test_closing_instructions_reach_the_reviewer_only_in_a_closing_review():
     _, closing = PR.build_prompt(root, cfg, pack({"number": 3, "closing": True, "full_reviews": 2, "since": "abc1234"}))
     assert "This is review 3 of PR #20" in closing and "`git diff abc1234..HEAD`" in closing
     assert "only new `critical` and `major` findings" in closing and "Leave out `minor`, `nit`" in closing
-    assert "every finding from earlier reviews that is still unresolved" in closing
+    assert "Check every earlier finding above" in closing
     assert closing.index("closing review") < closing.index("DIFF")
     _, nosince = PR.build_prompt(root, cfg, pack({"number": 3, "closing": True, "full_reviews": 2, "since": ""}))
     assert "git diff" not in nosince
@@ -234,3 +238,80 @@ def test_run_tells_the_reviewer_and_records_the_round(tmp_path, monkeypatch, lim
     if closing:
         assert "`git diff c2..HEAD`" in reviewer.user
     assert meta.get("full_requested", False) is (full and bool(limits))
+
+
+# ---- GPT Sol's review of #10 ------------------------------------------------------------------------------------------
+
+def finding(fid, sev="major", title="t", file="a.py", line=3):
+    return {"id": fid, "severity": sev, "title": title, "file": file, "line_start": line}
+
+
+def env_with(findings, commit, reviewer="gpt"):
+    return {"meta": {"pr": 20, "commit": commit, "reviewer": reviewer},
+            "review": {"scope": "pr", "verdict": "changes_needed", "findings": findings}}
+
+
+def test_a_closing_review_gets_every_earlier_finding_even_unanswered_ones():
+    """Two valid earlier reviews nobody answered: no decision rows anywhere. Both lists must reach the reviewer."""
+    names = ["reviews/2026-11-01-pr20-gpt.json", "reviews/2026-10-31-pr20-gpt.json"]
+    records = {"2026-10-31-pr20-gpt.json": env_with([finding("F1", title="crash on resume"),
+                                                     finding("F2", "minor", "typo", "b.md", 9)], "c1"),
+               "2026-11-01-pr20-gpt.json": env_with([finding("F1", "critical", "stop reason ignored")], "c2")}
+    prior = R.prior_reviews(names, 20, lambda n: records[n])
+    info = R.review_round(ON, 20, prior, log_texts=[])
+    assert info["closing"] is True
+    task = R.closing_task(info, 20)
+    assert task.index("2026-10-31-pr20-gpt.json") < task.index("2026-11-01-pr20-gpt.json")      # oldest first
+    assert "F1 `major` crash on resume (a.py:3) — recorded: not answered" in task
+    assert "F2 `minor` typo (b.md:9) — recorded: not answered" in task
+    assert "F1 `critical` stop reason ignored (a.py:3) — recorded: not answered" in task
+    assert "not proof that it holds" in task
+
+
+def test_dispositions_come_from_the_pr_branch_log_and_main():
+    log_main = ("| ID | Date | Review | Finding | Reviewer | Severity | Decision | Reason | Fixed in |\n|---|\n"
+                "| PR20-F1 | 2026-10-31 | [2026-10-31-pr20-gpt.json](x) | F1: crash | gpt | major | defer | later | — |\n")
+    log_branch = log_main + ("| PR20-F2 | 2026-10-31 | [2026-10-31-pr20-gpt.json](x) | F2: typo | gpt | minor | "
+                             "accept | ok | #21 |\n"
+                             "| PR20-F1b | 2026-11-01 | [2026-10-31-pr20-gpt.json](x) | F1: crash | gpt | major | "
+                             "reject | wrong | — |\n"
+                             "| PR20-2-F1 | 2026-11-01 | [2026-11-01-pr20-gpt.json](y) | F1: other | gpt | major | "
+                             "accept | ok | #22 |\n")
+    d = R.dispositions([log_main, log_branch], "2026-10-31-pr20-gpt.json")
+    assert d == {"F1": "reject", "F2": "accept (fixed in #21)"}                     # the later row wins
+    assert R.dispositions([log_branch], "2026-10-31-pr20-gpt-2.json") == {}          # no prefix collisions
+
+
+def test_history_too_long_to_list_falls_back_to_a_full_review():
+    big = [{"name": f"r{i}", "commit": f"c{i}", "findings": [finding(f"F{k}") for k in range(1, 16)]}
+           for i in range(7)]                                                        # 105 findings
+    info = R.review_round(ON, 20, big)
+    assert info["number"] == 8 and info["closing"] is False and info["history"] == []
+
+
+def test_a_review_whose_findings_cannot_be_listed_means_unknown():
+    bad = {"meta": {"pr": 20, "commit": "c"}, "review": {"scope": "pr", "verdict": "approve", "findings": "oops"}}
+    assert R.prior_reviews(["reviews/2026-11-01-pr20-gpt.json"], 20, lambda n: bad) is None
+
+
+def test_round_for_reads_the_pr_branch_decision_log(tmp_path):
+    repo, main = tmp_path / "r", tmp_path / "main"
+    repo.mkdir()
+    (main / "reviews").mkdir(parents=True)
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.email", "t@t")
+    git(repo, "config", "user.name", "t")
+    git(repo, "checkout", "-q", "--orphan", "reviewer/archive")
+    (repo / "reviews").mkdir()
+    for name, commit in (("2026-10-31-pr20-gpt.json", "c1"), ("2026-11-01-pr20-gpt.json", "c2")):
+        (repo / "reviews" / name).write_text(json.dumps(env_with([finding("F1")], commit)))
+        git(repo, "add", f"reviews/{name}")
+        git(repo, "commit", "-q", "-m", name)
+    git(repo, "update-ref", "refs/remotes/origin/reviewer/archive", "HEAD")
+    (repo / "reviews" / "decisions.md").write_text(
+        "| PR20-F1 | d | [2026-10-31-pr20-gpt.json](x) | F1: t | gpt | major | accept | ok | #21 |\n")
+    (main / "reviews" / "decisions.md").write_text("")                              # not merged into main yet
+    info = R.round_for(repo, ON, 20, trusted=main)
+    assert info["closing"] is True
+    recorded = [f["disposition"] for h in info["history"] for f in h["findings"]]
+    assert recorded == ["accept (fixed in #21)", "not answered"]

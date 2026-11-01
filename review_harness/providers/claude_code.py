@@ -162,6 +162,52 @@ def redact(text: str, limit: int = DENIAL_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+SAFE_WORD = re.compile(r"^[A-Za-z0-9_.,/+-]+$")           # program names, paths, plain words
+SHORT_FLAG = re.compile(r"^-[A-Za-z0-9]{1,2}$")              # -p, -I, -q, -k, -5
+LONG_FLAG = re.compile(r"^--[a-z][a-z0-9-]*$")              # --tb, --maxfail (no =value)
+OPERATORS = {"&&", "||", "|", ";", ">", ">>", "<", "<<", "2>&1", "&"}
+SENSITIVE_FLAGS = {"-u", "--user", "--password", "--pass", "--passwd", "--token", "--secret", "--api-key", "--key",
+                   "--auth", "--header", "-H", "--cookie", "-b", "--data", "--data-raw", "--data-binary", "-d",
+                   "--form", "-F", "--oauth2-bearer", "--proxy-user", "-U", "--netrc-file"}
+PLAIN_URL = re.compile(r"^(https?|ssh|git)://[A-Za-z0-9.-]+(?::\d+)?(/[A-Za-z0-9_./~-]*)?$")
+
+
+def safe_command(text: str, limit: int = DENIAL_LIMIT) -> str:
+    """A denied command as diagnostics: an allowlist, not a blocklist. Only the first line is kept (a heredoc's body
+    or a script is dropped). A word survives only if it is plainly safe (a program name, a path, a flag without a
+    value, a shell operator, a URL with no credentials or query); anything else, and any value after a flag that can
+    carry credentials (-H, -u, --password, --data, ...), becomes ***. Known secret shapes are masked first. Cut last."""
+    import shlex
+    lines = str(text).splitlines() or [""]
+    first = redact(lines[0], 10_000)
+    try:
+        words = shlex.split(first, posix=True)
+    except ValueError:                                  # unbalanced quotes: fall back to plain words
+        words = first.split()
+    out, mask_next = [], False
+    for w in words:
+        if mask_next:
+            out.append("***")
+            mask_next = False
+            continue
+        if w in OPERATORS or w.startswith("<<"):
+            out.append(w if w in OPERATORS else "<<…")
+        elif w in SENSITIVE_FLAGS:
+            out.append(w)
+            mask_next = True
+        elif w == "-" or SHORT_FLAG.match(w) or LONG_FLAG.match(w):         # "-" is stdin (python -)
+            out.append(w)
+        elif w.startswith("-"):                         # -pSECRET, --password=x, --header=…
+            out.append(w.split("=", 1)[0] + "=***" if w.startswith("--") and "=" in w else "***")
+        elif PLAIN_URL.match(w) or (SAFE_WORD.match(w) and len(w) <= 80):
+            out.append(w)
+        else:
+            out.append("***")
+    more = len(lines) - 1
+    shown = " ".join(out) + (f" (+{more} more line{'s' if more != 1 else ''})" if more else "")
+    return redact(shown, limit)
+
+
 def denials_from(data: dict) -> list[dict]:
     """The CLI result's `permission_denials` as [{"tool", "command"}], redacted. Missing or malformed: []."""
     out = []
@@ -174,22 +220,32 @@ def denials_from(data: dict) -> list[dict]:
         tool = str(d.get("tool_name") or d.get("tool") or "?")
         inp = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
         what = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
-        out.append({"tool": redact(tool, 40), "command": redact(what)})
+        out.append({"tool": redact(tool, 40), "command": safe_command(what)})
     return out
 
 
+class CLIError(RuntimeError):
+    """The CLI reported an error; `denials` keeps what its sandbox refused before it stopped."""
+
+    def __init__(self, message: str, denials: list[dict] | None = None):
+        super().__init__(message)
+        self.denials = denials or []
+
+
 def parse_output(stdout: str) -> Completion:
-    """Read the CLI's JSON result; prefer the schema-validated object when present."""
+    """Read the CLI's JSON result; prefer the schema-validated object when present. Denials are read first, so a
+    run that ends in an error still reports them."""
     data = json.loads(stdout)
+    denials = denials_from(data) if isinstance(data, dict) else []
     if data.get("is_error"):
-        raise RuntimeError(f"Claude Code reported an error ({data.get('subtype', 'unknown')}): "
-                           f"{str(data.get('result', ''))[:400]}")
+        raise CLIError(f"Claude Code reported an error ({data.get('subtype', 'unknown')}): "
+                       f"{str(data.get('result', ''))[:400]}", denials)
     structured = data.get("structured_output")
     text = json.dumps(structured) if isinstance(structured, dict) else str(data.get("result", ""))
     usage = data.get("usage") or {}
     tokens_in = sum(int(usage.get(k, 0) or 0) for k in
                     ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
-    return Completion(text, tokens_in, int(usage.get("output_tokens", 0) or 0), denials_from(data))
+    return Completion(text, tokens_in, int(usage.get("output_tokens", 0) or 0), denials)
 
 
 def describe(name: str, args: dict, work_dir: Path) -> str | None:
@@ -276,8 +332,18 @@ class ClaudeCodeProvider(Provider):
         self.run, self.cwd, self.secret, self.mode = run, Path(work_dir or cwd), reviewer["secret"], mode
         self.on_step = None          # set to a callable to receive one line per tool call (live progress)
         self.deadline = None         # one time budget for the run, shared by the retry (PROJ-2026-10-26-2-F2)
+        self.denials = []            # every denial in this run, failed attempts included (B6)
 
     def complete(self, system: str, messages: list[dict], max_output_tokens: int) -> Completion:
+        try:
+            c = self._complete(system, messages, max_output_tokens)
+        except CLIError as e:
+            self.denials += e.denials
+            raise
+        self.denials += c.denials
+        return c
+
+    def _complete(self, system: str, messages: list[dict], max_output_tokens: int) -> Completion:
         retry = self.deadline is not None
         if not retry:
             self.deadline = time.monotonic() + self.timeout

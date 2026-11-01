@@ -386,6 +386,14 @@ def respond(root: Path, cfg: dict, provider: Provider, work_dir: Path, envelope:
                                       cfg["decision_log"], footer(cfg), denials)}
 
 
+def denials_note(denials) -> str:
+    """For a failed run's message: what the sandbox refused (already sanitised by the provider), briefly."""
+    if not denials:
+        return ""
+    shown = "; ".join(f"{d.get('tool', '?')}: {d.get('command', '')}" for d in denials[:5])
+    return f" Denied commands ({len(denials)}): {shown}" + (" …" if len(denials) > 5 else "")
+
+
 def cfg_protected(cfg: dict) -> list[str]:
     return protected_paths(cfg)
 
@@ -429,7 +437,8 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as e:  # noqa: BLE001 - one-line reason for the PR, full traceback in the log
         if "progress" in locals():
             progress.finish(False, "stopped with an error (reason below)")
-        report_error(args.error_file, f"{type(e).__name__}: {e}")
+        report_error(args.error_file, f"{type(e).__name__}: {e}"
+                     + denials_note(getattr(locals().get("provider"), "denials", None)))
         raise
     progress.finish(result["status"] != "invalid",
                     {"done": "decisions ready; the fix PR follows", "nothing": "nothing left to answer",
@@ -440,7 +449,7 @@ def main(argv: list[str] | None = None) -> int:
         return 3
     if result["status"] == "invalid":
         report_error(args.error_file, "The author's answer failed validation after one retry: "
-                     + "; ".join(result["errors"][:5]))
+                     + "; ".join(result["errors"][:5]) + denials_note(result.get("denials")))
         return 2
     Path(args.summary_out).write_text(result["summary"])
     if args.out:
