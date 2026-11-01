@@ -92,6 +92,8 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--title", default="", help="pr scope: PR title")
     ap.add_argument("--body-file", help="pr scope: file with the PR description")
     ap.add_argument("--areas", nargs="*", help="project scope: paths or globs (default: config default_areas)")
+    ap.add_argument("--full", action="store_true", help="pr scope: a full review even past limits.full_reviews "
+                    "(`/review full`)")
     ap.add_argument("--dry-run", action="store_true", help="build the prompt and report its size; no API call")
     ap.add_argument("--out", help="write the envelope here instead of reviews/")
     ap.add_argument("--error-file", help="on failure, write a short reason here (the workflow posts it on the PR)")
@@ -125,6 +127,8 @@ def _main(args) -> int:
         body = Path(args.body_file).read_text() if args.body_file else ""
         pack = build_pr_pack(repo, cfg, args.base, args.head, args.title, body, trusted)
         scope_tag = f"pr{args.pr}" if args.pr else "pr"
+        from .rounds import round_for
+        pack["round"], pack["pr"] = round_for(repo, cfg, args.pr, args.full), args.pr
     else:
         pack = build_project_pack(repo, cfg, args.areas, trusted)
         scope_tag = "project"
@@ -132,7 +136,7 @@ def _main(args) -> int:
     if args.dry_run:
         system, user = build_prompt(root, cfg, pack)
         print(json.dumps({"reviewer": reviewer["name"], "model": reviewer["model"], "scope": pack["scope"],
-                          "files": len(pack["files"]), "dropped": pack["dropped"],
+                          "files": len(pack["files"]), "dropped": pack["dropped"], "round": pack.get("round"),
                           "prompt_tokens_est": (len(system) + len(user)) // 4}, indent=1))
         return 0
 
@@ -153,6 +157,12 @@ def _main(args) -> int:
         progress.finish(True, f"verdict `{envelope['review']['verdict']}`, "
                               f"{len(envelope['review']['findings'])} findings; the review follows")
     envelope["meta"]["pr"] = args.pr
+    info = pack.get("round") or {}
+    if info.get("full_reviews"):                        # the project counts reviews (limits.full_reviews)
+        envelope["meta"]["review_number"] = info.get("number")
+        envelope["meta"]["closing_review"] = bool(info.get("closing"))
+        if args.full:
+            envelope["meta"]["full_requested"] = True
     if os.environ.get("REVIEW_HARNESS_COMMIT"):         # which harness ran the review (set by the workflow)
         envelope["meta"]["harness"] = os.environ["REVIEW_HARNESS_COMMIT"]
     envelope["meta"]["commit"] = subprocess.run(["git", "-C", str(repo), "rev-parse", args.head if args.scope == "pr"

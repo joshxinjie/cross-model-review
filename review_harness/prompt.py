@@ -33,7 +33,12 @@ def build_prompt(root: Path, cfg: dict, pack: dict) -> tuple[str, str]:
     if pack["dropped"]:
         dropped = ("\nThese files were left out to fit the size limit; do not assume their contents: "
                    + ", ".join(pack["dropped"]) + "\n")
-    user = (f"{SCOPE_TASK[pack['scope']]}\n{dropped}\n"
+    closing = ""
+    info = pack.get("round") or {}
+    if pack["scope"] == "pr" and info.get("closing"):
+        from .rounds import closing_task
+        closing = "\n" + closing_task(info, pack.get("pr"))
+    user = (f"{SCOPE_TASK[pack['scope']]}\n{closing}{dropped}\n"
             f"Material ({len(pack['files'])} items):\n\n{pack['text']}\n\n"
             "Return the JSON object now.")
     return system, user

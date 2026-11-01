@@ -27,21 +27,31 @@ import requests
 from .config import (ROOT, author_for, fix_branch_prefix, get_author, get_reviewer, load_config, path_matches,
                      today_sgt)
 
-COMMAND = re.compile(r"^/review(?:[ \t]+(?!force\b)([A-Za-z0-9_-]+))?([ \t]+force)?[ \t]*$")
+COMMAND = re.compile(r"^/review(?:[ \t]+(?!(?:force|full)\b)([A-Za-z0-9_-]+))?((?:[ \t]+(?:full|force)\b)*)[ \t]*$")
 TRUSTED = {"OWNER", "MEMBER", "COLLABORATOR"}
 
 
 def parse_command(body: str) -> tuple[bool, str | None]:
-    """'/review', '/review fable', '/review force' or '/review fable force' on the first line -> (True, name or None)."""
+    """'/review', '/review fable', then optionally `full` and/or `force`, on the first line -> (True, name or None)."""
     first = (body or "").strip().splitlines()[0] if (body or "").strip() else ""
     m = COMMAND.match(first)
     return (True, m.group(1).lower() if m and m.group(1) else None) if m else (False, None)
 
 
-def wants_force(body: str) -> bool:
+def command_flags(body: str) -> set[str]:
     first = (body or "").strip().splitlines()[0] if (body or "").strip() else ""
     m = COMMAND.match(first)
-    return bool(m and m.group(2))
+    return set((m.group(2) or "").split()) if m else set()
+
+
+def wants_force(body: str) -> bool:
+    """`force`: review a commit that was already reviewed."""
+    return "force" in command_flags(body)
+
+
+def wants_full(body: str) -> bool:
+    """`full`: a full review even past limits.full_reviews (rounds.py). Widens the scope; not a blind review."""
+    return "full" in command_flags(body)
 
 
 def codex_flag(model_user: dict) -> str:
@@ -114,8 +124,11 @@ def resolve(event_name: str, event: dict, inputs: dict, cfg: dict, get_json, arc
             return skip()
         if event["comment"].get("author_association") not in TRUSTED:
             return skip("Only the repo owner or collaborators can start a review.")
-        return pr_target(cfg, get_json(f"pulls/{event['issue']['number']}"), name, archive_files, today,
-                         last_review, wants_force(event["comment"]["body"]))
+        out = pr_target(cfg, get_json(f"pulls/{event['issue']['number']}"), name, archive_files, today,
+                        last_review, wants_force(event["comment"]["body"]))
+        if out.get("run") == "true":
+            out["full"] = "true" if wants_full(event["comment"]["body"]) else "false"
+        return out
 
     if event_name == "pull_request":
         action = event.get("action")

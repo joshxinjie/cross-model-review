@@ -84,6 +84,9 @@ limits:
   respond_agent_timeout_minutes: 40
   respond_codex_timeout_minutes: 40
   max_runs_per_pr_per_day: 6   # Singapore day
+  # full_reviews: 2            # opt in to closing reviews: a PR's first N reviews are full; from N+1 on a review
+                               # checks the earlier fixes and regressions, and open findings go to the owner instead
+                               # of another round. Describe it in REVIEW.md. `/review full` asks for a full one.
 
 triggers:
   pr_comment_command: /review
