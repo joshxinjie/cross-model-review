@@ -162,50 +162,63 @@ def redact(text: str, limit: int = DENIAL_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-SAFE_WORD = re.compile(r"^[A-Za-z0-9_.,/+-]+$")           # program names, paths, plain words
+OPERATORS = {"&&", "||", "|", ";", ">", ">>", "<", "&", "2>&1", "2>/dev/null", ">/dev/null"}
 SHORT_FLAG = re.compile(r"^-[A-Za-z0-9]{1,2}$")              # -p, -I, -q, -k, -5
-LONG_FLAG = re.compile(r"^--[a-z][a-z0-9-]*$")              # --tb, --maxfail (no =value)
-OPERATORS = {"&&", "||", "|", ";", ">", ">>", "<", "<<", "2>&1", "&"}
-SENSITIVE_FLAGS = {"-u", "--user", "--password", "--pass", "--passwd", "--token", "--secret", "--api-key", "--key",
-                   "--auth", "--header", "-H", "--cookie", "-b", "--data", "--data-raw", "--data-binary", "-d",
-                   "--form", "-F", "--oauth2-bearer", "--proxy-user", "-U", "--netrc-file"}
+LONG_FLAG = re.compile(r"^--[a-z][a-z0-9-]*$")              # --tb, --maxfail (a value after it is still hidden)
+PATH_WORD = re.compile(r"^(?:[A-Za-z0-9_.~-]*/[A-Za-z0-9_./~-]*|[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,5})$")
 PLAIN_URL = re.compile(r"^(https?|ssh|git)://[A-Za-z0-9.-]+(?::\d+)?(/[A-Za-z0-9_./~-]*)?$")
+# Words that say what was run, kept wherever they appear. Anything else in argument position is hidden.
+KNOWN_WORDS = {
+    "python", "python3", "pytest", "pip", "pip3", "uv", "node", "npm", "npx", "bash", "sh", "make", "git", "gh",
+    "cat", "cd", "ls", "mkdir", "rm", "cp", "mv", "touch", "echo", "printf", "head", "tail", "grep", "rg", "sed",
+    "awk", "find", "xargs", "wc", "sort", "diff", "tee", "env", "timeout", "curl", "wget", "jq",
+    "status", "log", "show", "add", "commit", "push", "pull", "fetch", "checkout", "switch", "reset", "rebase",
+    "stash", "branch", "merge", "clone", "install", "run", "test", "build", "tool", "module",
+}
 
 
 def safe_command(text: str, limit: int = DENIAL_LIMIT) -> str:
-    """A denied command as diagnostics: an allowlist, not a blocklist. Only the first line is kept (a heredoc's body
-    or a script is dropped). A word survives only if it is plainly safe (a program name, a path, a flag without a
-    value, a shell operator, a URL with no credentials or query); anything else, and any value after a flag that can
-    carry credentials (-H, -u, --password, --data, ...), becomes ***. Known secret shapes are masked first. Cut last."""
+    """A denied command as diagnostics, default deny. Only the first line is kept (a heredoc's body or a script is
+    dropped and counted). It is split with shell quoting first, so masking never breaks a quoted value; a line that
+    can't be split shows nothing. Then a word is kept only if it says what was run: the program at the start of each
+    command, a known tool or subcommand name, a flag (never its value), a path, a shell operator, a URL with no
+    credentials or query. Every other word, every NAME=value and every value after a flag becomes ***. Known
+    secret shapes are masked again at the end; cut last."""
     import shlex
     lines = str(text).splitlines() or [""]
-    first = redact(lines[0], 10_000)
+    more = len(lines) - 1
+    tail = f" (+{more} more line{'s' if more != 1 else ''})" if more else ""
     try:
-        words = shlex.split(first, posix=True)
-    except ValueError:                                  # unbalanced quotes: fall back to plain words
-        words = first.split()
-    out, mask_next = [], False
+        words = shlex.split(lines[0], posix=True, comments=False)
+    except ValueError:
+        return "(command not shown: it could not be parsed safely)" + tail
+    out, start, after_flag = [], True, False
     for w in words:
-        if mask_next:
-            out.append("***")
-            mask_next = False
-            continue
         if w in OPERATORS or w.startswith("<<"):
             out.append(w if w in OPERATORS else "<<…")
-        elif w in SENSITIVE_FLAGS:
+            start, after_flag = w in OPERATORS, False
+            continue
+        if w == "-" or SHORT_FLAG.match(w) or LONG_FLAG.match(w):
             out.append(w)
-            mask_next = True
-        elif w == "-" or SHORT_FLAG.match(w) or LONG_FLAG.match(w):         # "-" is stdin (python -)
-            out.append(w)
-        elif w.startswith("-"):                         # -pSECRET, --password=x, --header=…
+            start, after_flag = False, True
+            continue
+        if "=" in w and not w.startswith("-") and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
+            out.append(w.split("=", 1)[0] + "=***")        # an environment assignment: never its value
+            continue
+        if w.startswith("-"):                               # -pSECRET, --password=x
             out.append(w.split("=", 1)[0] + "=***" if w.startswith("--") and "=" in w else "***")
-        elif PLAIN_URL.match(w) or (SAFE_WORD.match(w) and len(w) <= 80):
+            start, after_flag = False, False
+            continue
+        known = w in KNOWN_WORDS or (start and re.match(r"^[A-Za-z0-9_.+-]{1,40}$", w))
+        is_path = PATH_WORD.match(w) and len(w) <= 120
+        if after_flag and not is_path and w not in KNOWN_WORDS:
+            out.append("***")                               # a flag's value: default deny
+        elif known or is_path or PLAIN_URL.match(w):
             out.append(w)
         else:
             out.append("***")
-    more = len(lines) - 1
-    shown = " ".join(out) + (f" (+{more} more line{'s' if more != 1 else ''})" if more else "")
-    return redact(shown, limit)
+        start, after_flag = False, False
+    return redact(" ".join(out) + tail, limit)
 
 
 def denials_from(data: dict) -> list[dict]:

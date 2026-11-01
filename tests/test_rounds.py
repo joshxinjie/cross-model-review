@@ -258,28 +258,55 @@ def test_a_closing_review_gets_every_earlier_finding_even_unanswered_ones():
                                                      finding("F2", "minor", "typo", "b.md", 9)], "c1"),
                "2026-11-01-pr20-gpt.json": env_with([finding("F1", "critical", "stop reason ignored")], "c2")}
     prior = R.prior_reviews(names, 20, lambda n: records[n])
-    info = R.review_round(ON, 20, prior, log_texts=[])
+    info = R.review_round(ON, 20, prior)
     assert info["closing"] is True
     task = R.closing_task(info, 20)
     assert task.index("2026-10-31-pr20-gpt.json") < task.index("2026-11-01-pr20-gpt.json")      # oldest first
     assert "F1 `major` crash on resume (a.py:3) — recorded: not answered" in task
     assert "F2 `minor` typo (b.md:9) — recorded: not answered" in task
     assert "F1 `critical` stop reason ignored (a.py:3) — recorded: not answered" in task
-    assert "not proof that it holds" in task
+    assert "No row is proof that a fix holds" in task
 
 
-def test_dispositions_come_from_the_pr_branch_log_and_main():
-    log_main = ("| ID | Date | Review | Finding | Reviewer | Severity | Decision | Reason | Fixed in |\n|---|\n"
-                "| PR20-F1 | 2026-10-31 | [2026-10-31-pr20-gpt.json](x) | F1: crash | gpt | major | defer | later | — |\n")
-    log_branch = log_main + ("| PR20-F2 | 2026-10-31 | [2026-10-31-pr20-gpt.json](x) | F2: typo | gpt | minor | "
-                             "accept | ok | #21 |\n"
-                             "| PR20-F1b | 2026-11-01 | [2026-10-31-pr20-gpt.json](x) | F1: crash | gpt | major | "
-                             "reject | wrong | — |\n"
-                             "| PR20-2-F1 | 2026-11-01 | [2026-11-01-pr20-gpt.json](y) | F1: other | gpt | major | "
-                             "accept | ok | #22 |\n")
-    d = R.dispositions([log_main, log_branch], "2026-10-31-pr20-gpt.json")
-    assert d == {"F1": "reject", "F2": "accept (fixed in #21)"}                     # the later row wins
-    assert R.dispositions([log_branch], "2026-10-31-pr20-gpt-2.json") == {}          # no prefix collisions
+HEADER = "| ID | Date | Review | Finding | Reviewer | Severity | Decision | Reason | Fixed in |\n|---|\n"
+
+
+def row(fid, decision, reason, fixed="—", review="2026-10-31-pr20-gpt.json"):
+    return f"| PR20-{fid} | 2026-10-31 | [{review}](x) | {fid}: t | gpt | major | {decision} | {reason} | {fixed} |\n"
+
+
+def test_an_author_row_on_the_branch_never_overrides_main():
+    """GPT Sol on #10: main says the owner rejected F1; an unconfirmed author row on the PR branch says accepted.
+    The branch row is shown as provisional and main's decision stays first and unchallenged."""
+    main = HEADER + row("F1", "reject", "Xin Jie: out of scope")
+    branch = main + row("F1", "accept", "author: fixed", "#21") + row("F2", "defer", "author; for Xin Jie to confirm")
+    d = R.dispositions(main, branch, "2026-10-31-pr20-gpt.json")
+    assert d["F1"]["main"] == [{"decision": "reject", "reason": "Xin Jie: out of scope", "fixed_in": ""}]
+    assert d["F1"]["branch"] == [{"decision": "accept", "reason": "author: fixed", "fixed_in": "#21"}]
+    assert d["F2"] == {"main": [], "branch": [{"decision": "defer", "reason": "author; for Xin Jie to confirm",
+                                               "fixed_in": ""}]}
+    f1 = R.describe_disposition(d["F1"])
+    assert f1.startswith("on main: reject: Xin Jie: out of scope | only on this PR's branch, provisional")
+    assert "accept (fixed in #21): author: fixed" in f1
+    f2 = R.describe_disposition(d["F2"])
+    assert f2.startswith("only on this PR's branch, provisional (not a confirmed decision): defer")
+    assert "for Xin Jie to confirm" in f2                                             # the rationale is kept
+    assert R.describe_disposition(None) == "not answered"
+
+
+def test_rows_already_on_main_are_not_repeated_as_provisional():
+    main = HEADER + row("F1", "accept", "ok", "#21")
+    d = R.dispositions(main, main, "2026-10-31-pr20-gpt.json")                       # the branch carries main's rows
+    assert d["F1"]["branch"] == [] and R.describe_disposition(d["F1"]) == "on main: accept (fixed in #21): ok"
+    assert R.dispositions(main, main, "2026-10-31-pr20-gpt-2.json") == {}            # no prefix collisions
+
+
+def test_the_closing_prompt_says_branch_rows_cannot_settle_findings():
+    info = R.review_round(ON, 20, [{"name": "b", "commit": "c2", "findings": [finding("F1")]},
+                                   {"name": "a", "commit": "c1", "findings": []}])
+    task = R.closing_task(info, 20)
+    assert "Rows on main are recorded decisions" in task and "never settle a finding or override main" in task
+    assert "settled by a decision recorded on main" in task
 
 
 def test_history_too_long_to_list_falls_back_to_a_full_review():
@@ -314,4 +341,9 @@ def test_round_for_reads_the_pr_branch_decision_log(tmp_path):
     info = R.round_for(repo, ON, 20, trusted=main)
     assert info["closing"] is True
     recorded = [f["disposition"] for h in info["history"] for f in h["findings"]]
-    assert recorded == ["accept (fixed in #21)", "not answered"]
+    assert recorded[0].startswith("only on this PR's branch, provisional") and "accept (fixed in #21)" in recorded[0]
+    assert recorded[1] == "not answered"
+    (main / "reviews" / "decisions.md").write_text(
+        "| PR20-F1 | d | [2026-10-31-pr20-gpt.json](x) | F1: t | gpt | major | reject | owner | — |\n")
+    first = R.round_for(repo, ON, 20, trusted=main)["history"][0]["findings"][0]["disposition"]
+    assert first.startswith("on main: reject: owner | only on this PR's branch, provisional")

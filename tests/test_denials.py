@@ -132,7 +132,7 @@ def test_credentials_in_denied_commands_never_survive(cmd):
     ("mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<'EOF'\nimport os\nprint(1)\nEOF",
      "mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<… (+3 more lines)"),
     ("git clone https://github.com/o/r", "git clone https://github.com/o/r"),
-    ('echo "unbalanced', "echo ***"),
+    ('echo "unbalanced', "(command not shown: it could not be parsed safely)"),
 ])
 def test_useful_diagnostics_survive(cmd, expect):
     assert CC.safe_command(cmd) == expect
@@ -207,3 +207,26 @@ def test_denials_note_is_short():
     out = RS.denials_note([{"tool": "Bash", "command": "c"}] * 7)
     assert out.startswith(" Denied commands (7): Bash: c") and out.endswith(" …")
     assert RS.denials_note([]) == "" and RS.denials_note(None) == ""
+
+
+# ---- GPT Sol's re-check of #10: default deny ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd", [
+    f"redis-cli -a {FAKE} ping",                          # a password as a flag's plain value
+    f"redis-cli --pass {FAKE} ping",
+    f"mysql db {FAKE}",                                   # a password as a plain positional word
+    f'PASSWORD="correct horse {FAKE}" python x.py',       # quoted multi-word assignment
+    f"DB_URL='postgres://u:{FAKE}@db/x' python x.py",
+    f"env MYSECRET={FAKE} python x.py",
+    f'curl -d "{{\"password\": \"{FAKE}\"}}" https://x.io',
+    f"sshpass -p {FAKE} ssh host",
+    f'echo "{FAKE}',                                      # unbalanced quote: fail closed, nothing shown
+    f"tool --token={FAKE}",
+])
+def test_unknown_values_are_denied_by_default(cmd):
+    out = CC.safe_command(cmd)
+    assert FAKE not in out and "horse" not in out and "correct" not in out, out
+
+
+def test_parse_errors_fail_closed():
+    assert CC.safe_command(f'cat "{FAKE}\nmore') == "(command not shown: it could not be parsed safely) (+1 more line)"

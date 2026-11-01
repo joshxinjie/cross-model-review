@@ -60,26 +60,55 @@ def prior_reviews(names_newest_first: list[str] | None, pr: int, read) -> list[d
 MAX_LISTED_FINDINGS = 90       # six full reviews of 15; more history than this falls back to a full review
 
 
-def dispositions(log_texts: list[str], review_name: str) -> dict[str, str]:
-    """{"F1": "accept (fixed in #21)", ...} from decision-log rows that name this review file. Several logs may be
-    given (the PR branch's, where fix-PR rows land, and main's); a later row for the same finding wins."""
+def dispositions(trusted_text: str, branch_text: str, review_name: str) -> dict[str, dict]:
+    """What the decision logs record for each finding of one review, with provenance:
+    {"F1": {"main": [rows], "branch": [rows]}}, where a row is {"decision", "reason", "fixed_in"}.
+
+    main's log is the trusted record (the review context takes it from main too). A row found only on the PR's
+    branch is provisional: it may come from a fix PR nobody has confirmed, so it can inform the check but never
+    overrides main or settles a finding."""
     from .respond import mentions, table_rows
-    out = {}
-    for text in log_texts:
+
+    def rows(text):
+        out = {}
         for cells in table_rows(text or ""):
             if len(cells) < 7 or not mentions(cells[2], review_name):
                 continue
             fid = cells[3].split(":", 1)[0].strip()
             if not re.fullmatch(r"F\d{1,2}", fid):
                 continue
-            decision = cells[6].strip() or "?"
             fixed = cells[8].strip() if len(cells) > 8 else ""
-            out[fid] = decision + (f" (fixed in {fixed})" if fixed and fixed not in ("—", "-") else "")
-    return out
+            row = {"decision": cells[6].strip() or "?", "reason": " ".join(cells[7].split())[:120] if len(cells) > 7
+                   else "", "fixed_in": "" if fixed in ("", "—", "-") else fixed}
+            out.setdefault(fid, []).append(row)
+        return out
+    main, branch = rows(trusted_text), rows(branch_text)
+    result = {}
+    for fid in set(main) | set(branch):
+        trusted = main.get(fid, [])
+        only_branch = [r for r in branch.get(fid, []) if r not in trusted]
+        result[fid] = {"main": trusted, "branch": only_branch}
+    return result
+
+
+def describe_disposition(d: dict | None) -> str:
+    if not d or not (d["main"] or d["branch"]):
+        return "not answered"
+
+    def one(r):
+        return (f"{r['decision']}" + (f" (fixed in {r['fixed_in']})" if r["fixed_in"] else "")
+                + (f": {r['reason']}" if r["reason"] else ""))
+    parts = []
+    if d["main"]:
+        parts.append("on main: " + "; then ".join(one(r) for r in d["main"]))
+    if d["branch"]:
+        parts.append("only on this PR's branch, provisional (not a confirmed decision): "
+                     + "; then ".join(one(r) for r in d["branch"]))
+    return " | ".join(parts)
 
 
 def review_round(cfg: dict, pr: int | None, prior: list[dict] | None, full_requested: bool = False,
-                 log_texts: list[str] | None = None) -> dict:
+                 logs: tuple[str, str] = ("", "")) -> dict:
     """{"number": n or None, "closing": bool, "full_reviews": N or None, "since": commit of the newest review,
     "history": earlier reviews oldest first, each finding with its recorded disposition (closing reviews only)}."""
     limit = full_reviews(cfg)
@@ -90,9 +119,9 @@ def review_round(cfg: dict, pr: int | None, prior: list[dict] | None, full_reque
     history = []
     if closing:
         for p in reversed(prior):
-            known = dispositions(log_texts or [], p["name"])
+            known = dispositions(logs[0], logs[1], p["name"])
             history.append({"name": p["name"], "reviewer": p.get("reviewer", ""), "commit": p["commit"],
-                            "findings": [dict(f, disposition=known.get(str(f.get("id")), "not answered"))
+                            "findings": [dict(f, disposition=describe_disposition(known.get(str(f.get("id")))))
                                          for f in p["findings"] if isinstance(f, dict)]})
         if sum(len(h["findings"]) for h in history) > MAX_LISTED_FINDINGS:
             closing, history = False, []           # too much to list: review it fully rather than narrowly
@@ -116,13 +145,14 @@ def closing_task(info: dict, pr: int) -> str:
     listed = "\n".join(lines) or "- (none)"
     return (f"This is review {info['number']} of PR #{pr}. This project gives a PR {info['full_reviews']} full "
             f"reviews; from then on a review is a *closing review* (REVIEW.md).{since}\n\n"
-            "Earlier reviews of this PR and their findings, with what the decision logs record for each (from this "
-            "PR's branch and from main). A recorded decision is what was proposed or decided, not proof that it "
+            "Earlier reviews of this PR and their findings, with what the decision logs record for each. Rows on "
+            "main are recorded decisions. Rows only on this PR's branch are provisional: they may come from a fix "
+            "PR nobody has confirmed, so they never settle a finding or override main. No row is proof that a fix "
             "holds: check it against the code.\n" + listed + "\n\n"
             "In a closing review:\n"
-            "- Check every earlier finding above: is it fixed in the code now, still open, or settled by a recorded "
-            "owner decision? Report any that is still open, at its severity. \"not answered\" means nobody has "
-            "responded to it.\n"
+            "- Check every earlier finding above: is it fixed in the code now, still open, or settled by a "
+            "decision recorded on main? Report any that is still open, at its severity. \"not answered\" means "
+            "nobody has responded to it.\n"
             "- Check the fixes made since the earlier reviews, the code those fixes touch, and regressions they "
             "cause. Report any problem there at the severity it deserves.\n"
             "- In code the fixes did not change, report only new `critical` and `major` findings, and a `question` "
@@ -161,9 +191,12 @@ def round_for(root: Path, cfg: dict, pr: int | None, full_requested: bool = Fals
         return {"number": None, "closing": False, "full_reviews": full_reviews(cfg), "since": "", "history": []}
     prior = prior_reviews(archive_history(root), pr, lambda name: read_record(root, name))
     log = cfg.get("decision_log", "reviews/decisions.md")
-    texts = []
-    for base in ([trusted] if trusted else []) + [root]:          # main first: the PR branch's rows win
-        path = Path(base) / log
-        if path.is_file():
-            texts.append(path.read_text(errors="replace"))
-    return review_round(cfg, pr, prior, full_requested, texts)
+
+    def read(base):
+        path = Path(base) / log if base else None
+        return path.read_text(errors="replace") if path and path.is_file() else ""
+    trusted_text = read(trusted) if trusted else ""
+    branch_text = read(root) if trusted and Path(trusted).resolve() != Path(root).resolve() else ""
+    if not trusted:
+        trusted_text = read(root)                       # no separate trusted checkout: this one is main
+    return review_round(cfg, pr, prior, full_requested, (trusted_text, branch_text))
