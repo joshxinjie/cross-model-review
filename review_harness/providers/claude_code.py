@@ -10,6 +10,7 @@ but not fetch pages; the author gets neither.
 
 import json
 import os
+import re
 import shutil
 import signal
 import subprocess
@@ -81,7 +82,12 @@ def command_hint(mode: str, settings: dict | None) -> str:
     if mode == "respond":
         return ("\n\n## Running commands\n\nRun the tests with " + tests + "; you may also run `python ...` scripts and "
                 "read-only git commands (`git diff`, `git log`, `git show`, `git status`)." + have + " You cannot "
-                "commit, push, reset, check out or delete files; the workflow commits your edits.\n")
+                "commit, push, reset, check out or delete files; the workflow commits your edits.\n\n"
+                "To run a code sketch or a stub, use this form from the start: write it to a file under `/tmp` with "
+                "the Write tool (for example `/tmp/check/run.py`), then run `python /tmp/check/run.py` as one command. "
+                "Don't write scratch files in the repository: they would end up in the fix PR. If a command is "
+                "denied, don't repackage it to get round the denial: report that check as `blocked` in "
+                "`verification` and say what was denied.\n")
     return ("\n\n## Running commands\n\nYou may run the tests with " + tests + " and read-only git commands (`git diff`, "
             "`git log`, `git show`), plus `ls`. Anything else is denied without asking." + have
             + " If a command is denied, say what you could not run; do not report that the tests fail.\n")
@@ -134,18 +140,155 @@ def flatten(messages: list[dict]) -> str:
     return "".join(parts)
 
 
+SECRET_PATTERNS = [
+    re.compile(r"\b(?:gh[opsur]_|github_pat_)[A-Za-z0-9_]{16,}"),                 # GitHub tokens
+    re.compile(r"\bsk-(?:ant-)?[A-Za-z0-9_-]{16,}"),                               # API keys
+    re.compile(r"\bxox[abposr]-[A-Za-z0-9-]{10,}"),                                # Slack tokens
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),                                          # AWS key IDs
+    re.compile(r"(?i)\bbearer\s+[A-Za-z0-9._~+/=-]{8,}"),                           # Authorization: Bearer …
+    re.compile(r"[A-Za-z0-9+/_=-]{40,}"),                                          # any long opaque string
+]
+SECRET_ASSIGNMENT = re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|KEY|SECRET|AUTH|PASSWORD|PASSWD)[A-Z0-9_]*)=(\S+)")
+DENIAL_LIMIT = 200
+
+
+def redact(text: str, limit: int = DENIAL_LIMIT) -> str:
+    """One line for a record or a PR: secrets masked first, then whitespace folded, then cut. Cutting alone is not
+    redaction: a token's first characters would survive it."""
+    text = SECRET_ASSIGNMENT.sub(lambda m: f"{m.group(1)}=***", str(text))
+    for pattern in SECRET_PATTERNS:
+        text = pattern.sub("***", text)
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+# A denied command is described only in this module's own words: a program name from this fixed list (and only for
+# the line's first word, which the shell always runs), counts, and the shell features found outside quotes. No word
+# of the command itself is ever copied, so nothing in it (a password, a token, a path) can appear (GPT Sol's
+# reviews of #10).
+KNOWN_PROGRAMS = {
+    "python", "python3", "pytest", "pip", "pip3", "uv", "node", "npm", "npx", "bash", "sh", "make", "git", "gh",
+    "cat", "cd", "ls", "mkdir", "rm", "cp", "mv", "touch", "echo", "printf", "head", "tail", "grep", "rg", "sed",
+    "awk", "find", "xargs", "wc", "sort", "diff", "tee", "env", "timeout", "curl", "wget", "jq", "chmod", "test",
+}
+
+
+def _shell_features(line: str) -> dict | None:
+    """Counts of shell syntax outside quotes, or None if the quoting doesn't balance. Never returns command text."""
+    quote, i, n = None, 0, len(line)
+    found = {"&&": 0, "||": 0, "|": 0, ";": 0, "redirect": 0, "heredoc": 0, "substitution": 0}
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            elif quote == '"' and line.startswith("$(", i):
+                found["substitution"] += 1
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+        elif line.startswith("&&", i) or line.startswith("||", i):
+            found[line[i:i + 2]] += 1
+            i += 1
+        elif line.startswith("<<<", i):
+            found["redirect"] += 1
+            i += 2
+        elif line.startswith("<<", i):
+            found["heredoc"] += 1
+            i += 1
+        elif c == "|":
+            found["|"] += 1
+        elif c == ";":
+            found[";"] += 1
+        elif c in "<>":
+            found["redirect"] += 1
+            if line.startswith(">>", i) or line.startswith(">&", i):
+                i += 1
+        elif line.startswith("$(", i) or c == "`":
+            found["substitution"] += 1
+        i += 1
+    return None if quote else found
+
+
+def safe_command(text: str, limit: int = DENIAL_LIMIT) -> str:
+    """A denied command as diagnostics, value-free by construction: only the module's own words. For example
+    `mkdir -p /tmp/s && cat > /tmp/s/x.py <<'EOF'` -> `mkdir … — 2 commands (&&); redirect; heredoc`. The program
+    is named only when the line's first word (after any NAME=value) is in KNOWN_PROGRAMS, else "a command"; a line
+    whose quoting doesn't balance says so and nothing else."""
+    import shlex
+    lines = str(text).splitlines() or [""]
+    more = len(lines) - 1
+    tail = f" (+{more} more line{'s' if more != 1 else ''})" if more else ""
+    features = _shell_features(lines[0])
+    if features is None:
+        return "a command (not described: its quoting could not be parsed)" + tail
+    try:
+        words = shlex.split(lines[0], posix=True, comments=False)
+    except ValueError:
+        return "a command (not described: its quoting could not be parsed)" + tail
+    k = 0
+    while k < len(words) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[k]):
+        k += 1
+    first = words[k].rsplit("/", 1)[-1] if k < len(words) else ""
+    name = f"{first} …" if first in KNOWN_PROGRAMS else ("a command" if words else "an empty command")
+    joins = [op for op in ("&&", "||", ";") if features[op]]
+    commands = 1 + sum(features[op] for op in ("&&", "||", ";", "|"))
+    parts = [f"{commands} command{'s' if commands != 1 else ''}" + (f" ({', '.join(joins)})" if joins else "")]
+    if features["|"]:
+        parts.append("pipe")
+    if k:
+        parts.append("environment setting")
+    for key, label in (("redirect", "redirect"), ("heredoc", "heredoc"), ("substitution", "command substitution")):
+        if features[key]:
+            parts.append(label)
+    return (name + " — " + "; ".join(parts) + tail)[:limit]
+
+
+def denials_from(data: dict) -> list[dict]:
+    """The CLI result's `permission_denials` as [{"tool", "command"}], redacted. Missing or malformed: []."""
+    out = []
+    raw = data.get("permission_denials")
+    if not isinstance(raw, list):
+        return out
+    for d in raw:
+        if not isinstance(d, dict):
+            continue
+        tool = str(d.get("tool_name") or d.get("tool") or "?")
+        inp = d.get("tool_input") if isinstance(d.get("tool_input"), dict) else {}
+        what = inp.get("command") or inp.get("file_path") or inp.get("pattern") or ""
+        out.append({"tool": redact(tool, 40), "command": safe_command(what)})
+    return out
+
+
+class CLIError(RuntimeError):
+    """The CLI reported an error; `denials` keeps what its sandbox refused before it stopped."""
+
+    def __init__(self, message: str, denials: list[dict] | None = None):
+        super().__init__(message)
+        self.denials = denials or []
+
+
 def parse_output(stdout: str) -> Completion:
-    """Read the CLI's JSON result; prefer the schema-validated object when present."""
+    """Read the CLI's JSON result; prefer the schema-validated object when present. Denials are read first, so a
+    run that ends in an error still reports them."""
     data = json.loads(stdout)
+    denials = denials_from(data) if isinstance(data, dict) else []
     if data.get("is_error"):
-        raise RuntimeError(f"Claude Code reported an error ({data.get('subtype', 'unknown')}): "
-                           f"{str(data.get('result', ''))[:400]}")
+        raise CLIError(f"Claude Code reported an error ({data.get('subtype', 'unknown')}): "
+                       f"{str(data.get('result', ''))[:400]}", denials)
     structured = data.get("structured_output")
     text = json.dumps(structured) if isinstance(structured, dict) else str(data.get("result", ""))
     usage = data.get("usage") or {}
     tokens_in = sum(int(usage.get(k, 0) or 0) for k in
                     ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens"))
-    return Completion(text, tokens_in, int(usage.get("output_tokens", 0) or 0))
+    return Completion(text, tokens_in, int(usage.get("output_tokens", 0) or 0), denials)
 
 
 def describe(name: str, args: dict, work_dir: Path) -> str | None:
@@ -232,8 +375,18 @@ class ClaudeCodeProvider(Provider):
         self.run, self.cwd, self.secret, self.mode = run, Path(work_dir or cwd), reviewer["secret"], mode
         self.on_step = None          # set to a callable to receive one line per tool call (live progress)
         self.deadline = None         # one time budget for the run, shared by the retry (PROJ-2026-10-26-2-F2)
+        self.denials = []            # every denial in this run, failed attempts included (B6)
 
     def complete(self, system: str, messages: list[dict], max_output_tokens: int) -> Completion:
+        try:
+            c = self._complete(system, messages, max_output_tokens)
+        except CLIError as e:
+            self.denials += e.denials
+            raise
+        self.denials += c.denials
+        return c
+
+    def _complete(self, system: str, messages: list[dict], max_output_tokens: int) -> Completion:
         retry = self.deadline is not None
         if not retry:
             self.deadline = time.monotonic() + self.timeout

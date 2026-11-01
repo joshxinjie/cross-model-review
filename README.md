@@ -76,6 +76,19 @@ The harness reads a repo's settings from its default branch, so land them in two
   budget per run.
 - **One queue per login.** Runs that use the ChatGPT login wait for each other, across both workflows.
 
+## Closing reviews (opt in)
+
+Review rounds cost the most. A project can set `limits.full_reviews: N` in `review/config.yaml`, and describe the rule
+in its REVIEW.md. A PR's first N reviews are then full reviews. From review N+1 on, the reviewer is told it is a
+*closing review*: it checks the fixes made since the earlier reviews, what they touch, regressions, and every earlier
+finding still open; in code the fixes did not change it reports only new `critical` and `major` findings and
+questions needed for correctness. The posted summary says open findings are the owner's to decide: no further
+`/respond` or review runs unless asked. `/review full` asks for a full review whatever the count (the reviewer still
+sees the decision log, so it is not a blind review). Reviews are counted from `reviewer/archive`: valid, completed
+reviews of that PR, across dates and reviewers, `/review force` repeats included; responses, project reviews and
+failed or invalid runs are not. If the archive can't be read, the review is a full one. Without the setting, nothing
+changes.
+
 ## Pinning
 
 Pin each project to a reviewed commit of this repo: the same full 40-character SHA in `uses: …@<sha>` and in

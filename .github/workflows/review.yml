@@ -63,6 +63,7 @@ jobs:
       head_sha: ${{ steps.gate.outputs.head_sha }}
       title: ${{ steps.gate.outputs.title }}
       areas: ${{ steps.gate.outputs.areas }}
+      full: ${{ steps.gate.outputs.full }}
     env:
       GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -262,14 +263,17 @@ jobs:
           REVIEWER: ${{ needs.gate.outputs.reviewer }}
           AUTHOR: ${{ needs.gate.outputs.author }}
           AREAS: ${{ needs.gate.outputs.areas }}
+          FULL: ${{ needs.gate.outputs.full }}               # `/review full`: a full review past limits.full_reviews
         run: |
           # actions/checkout left the job's GitHub token in .git/config; remove it before any reviewer runs.
           git config --local --unset-all http.https://github.com/.extraheader || true
           set +e
+          full_flag=""
+          if [ "$FULL" = true ]; then full_flag="--full"; fi
           if [ "$SCOPE" = "pr" ]; then
             out=$(python -m review_harness.run --scope pr --reviewer "$REVIEWER" --author "$AUTHOR" --base "origin/$BASE" --repo-dir "$GITHUB_WORKSPACE" \
                   --head pr-head --pr "$PR" --title "$TITLE" --body-file "$RUNNER_TEMP/pr_body.md" \
-                  --error-file "$RUNNER_TEMP/review_error.txt")
+                  $full_flag --error-file "$RUNNER_TEMP/review_error.txt")
           else
             # shellcheck disable=SC2086  # AREAS is deliberately split into separate paths
             out=$(python -m review_harness.run --scope project --reviewer "$REVIEWER" --repo-dir "$GITHUB_WORKSPACE" ${AREAS:+--areas $AREAS} \

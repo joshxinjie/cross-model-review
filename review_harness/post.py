@@ -80,10 +80,20 @@ def render_summary(envelope: dict, not_inline: list[dict] | None = None, decisio
         notes.append(f"verdict corrected from `{meta['verdict_adjusted_from']}` by the severity rules")
     if meta.get("context_dropped"):
         notes.append("left out to fit the limit: " + ", ".join(meta["context_dropped"][:8]))
+    if meta.get("review_number"):
+        notes.append(f"review {meta['review_number']} of this PR"
+                     + (" (full review requested)" if meta.get("full_requested") else ""))
     notes.append(f"{meta['input_tokens']:,} in / {meta['output_tokens']:,} out tokens")
-    parts.append("\n<sub>" + " · ".join(notes) + "</sub>\n\nComment `/respond` for the author's answer to each finding, "
-                 f"as a fix PR you can merge or close. Decisions go in `{decision_log}`.\n"
-                 + (f"\n{closing}\n" if closing else ""))
+    if meta.get("closing_review"):
+        # rounds.py: past limits.full_reviews, findings go to the owner instead of another automatic round.
+        after = ("**Closing review** (see REVIEW.md): it checked the earlier fixes, what they touch and regressions. "
+                 f"Open findings are the owner's to decide, recorded in `{decision_log}`. Comment `/respond` only to "
+                 "ask for one more author response; another review runs only if asked (`/review`, or `/review full` "
+                 "for a full one).\n")
+    else:
+        after = ("Comment `/respond` for the author's answer to each finding, as a fix PR you can merge or close. "
+                 f"Decisions go in `{decision_log}`.\n")
+    parts.append("\n<sub>" + " · ".join(notes) + "</sub>\n\n" + after + (f"\n{closing}\n" if closing else ""))
     return "".join(parts)
 
 
