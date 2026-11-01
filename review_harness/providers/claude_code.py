@@ -162,47 +162,93 @@ def redact(text: str, limit: int = DENIAL_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-OPERATORS = {"&&", "||", "|", ";", "&"}
-REDIRECTS = {">", ">>", "<", "2>", "2>>", "&>"}
-FIXED_REDIRECTS = {"2>&1", "1>&2", ">&2"}
-FLAG_NAME = re.compile(r"^(?:-[A-Za-z0-9]{1,2}|--[a-z][a-z0-9-]*)$")   # a flag's name alone, nothing attached
-PROGRAM_NAME = re.compile(r"^[A-Za-z0-9_.+-]{1,40}$")                  # a bare program name, no path
+# A denied command is described only in this module's own words: a program name from this fixed list (and only for
+# the line's first word, which the shell always runs), counts, and the shell features found outside quotes. No word
+# of the command itself is ever copied, so nothing in it (a password, a token, a path) can appear (GPT Sol's
+# reviews of #10).
+KNOWN_PROGRAMS = {
+    "python", "python3", "pytest", "pip", "pip3", "uv", "node", "npm", "npx", "bash", "sh", "make", "git", "gh",
+    "cat", "cd", "ls", "mkdir", "rm", "cp", "mv", "touch", "echo", "printf", "head", "tail", "grep", "rg", "sed",
+    "awk", "find", "xargs", "wc", "sort", "diff", "tee", "env", "timeout", "curl", "wget", "jq", "chmod", "test",
+}
+
+
+def _shell_features(line: str) -> dict | None:
+    """Counts of shell syntax outside quotes, or None if the quoting doesn't balance. Never returns command text."""
+    quote, i, n = None, 0, len(line)
+    found = {"&&": 0, "||": 0, "|": 0, ";": 0, "redirect": 0, "heredoc": 0, "substitution": 0}
+    while i < n:
+        c = line[i]
+        if quote:
+            if c == "\\" and quote == '"':
+                i += 2
+                continue
+            if c == quote:
+                quote = None
+            elif quote == '"' and line.startswith("$(", i):
+                found["substitution"] += 1
+            i += 1
+            continue
+        if c == "\\":
+            i += 2
+            continue
+        if c in "'\"":
+            quote = c
+        elif line.startswith("&&", i) or line.startswith("||", i):
+            found[line[i:i + 2]] += 1
+            i += 1
+        elif line.startswith("<<<", i):
+            found["redirect"] += 1
+            i += 2
+        elif line.startswith("<<", i):
+            found["heredoc"] += 1
+            i += 1
+        elif c == "|":
+            found["|"] += 1
+        elif c == ";":
+            found[";"] += 1
+        elif c in "<>":
+            found["redirect"] += 1
+            if line.startswith(">>", i) or line.startswith(">&", i):
+                i += 1
+        elif line.startswith("$(", i) or c == "`":
+            found["substitution"] += 1
+        i += 1
+    return None if quote else found
 
 
 def safe_command(text: str, limit: int = DENIAL_LIMIT) -> str:
-    """A denied command as diagnostics: its shape, never its values. Shown: each command's program name, flag names,
-    shell operators and redirection operators, and `<<…` for a heredoc. Everything else (every argument, every
-    flag's value, every NAME=value's value, every redirection target, a program given as a path) is ***. Only the
-    first line is used; a heredoc's body or a script is counted, not shown. The line is split with shell quoting
-    first, and a line that can't be split shows nothing. No word is judged by how it looks, so no value can be
-    mistaken for something safe to show."""
+    """A denied command as diagnostics, value-free by construction: only the module's own words. For example
+    `mkdir -p /tmp/s && cat > /tmp/s/x.py <<'EOF'` -> `mkdir … — 2 commands (&&); redirect; heredoc`. The program
+    is named only when the line's first word (after any NAME=value) is in KNOWN_PROGRAMS, else "a command"; a line
+    whose quoting doesn't balance says so and nothing else."""
     import shlex
     lines = str(text).splitlines() or [""]
     more = len(lines) - 1
     tail = f" (+{more} more line{'s' if more != 1 else ''})" if more else ""
+    features = _shell_features(lines[0])
+    if features is None:
+        return "a command (not described: its quoting could not be parsed)" + tail
     try:
         words = shlex.split(lines[0], posix=True, comments=False)
     except ValueError:
-        return "(command not shown: it could not be parsed safely)" + tail
-    out, start = [], True
-    for w in words:
-        if w in OPERATORS:
-            out.append(w)
-            start = True
-        elif w in REDIRECTS or w in FIXED_REDIRECTS:
-            out.append(w)
-        elif w.startswith("<<"):
-            out.append("<<…")
-        elif start and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
-            out.append(w.split("=", 1)[0] + "=***")             # an assignment before the program: name only
-        elif start:
-            out.append(w if PROGRAM_NAME.match(w) else "***")
-            start = False
-        elif w == "-" or FLAG_NAME.match(w):
-            out.append(w)
-        else:
-            out.append("***")
-    return redact(" ".join(out) + tail, limit)
+        return "a command (not described: its quoting could not be parsed)" + tail
+    k = 0
+    while k < len(words) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", words[k]):
+        k += 1
+    first = words[k].rsplit("/", 1)[-1] if k < len(words) else ""
+    name = f"{first} …" if first in KNOWN_PROGRAMS else ("a command" if words else "an empty command")
+    joins = [op for op in ("&&", "||", ";") if features[op]]
+    commands = 1 + sum(features[op] for op in ("&&", "||", ";", "|"))
+    parts = [f"{commands} command{'s' if commands != 1 else ''}" + (f" ({', '.join(joins)})" if joins else "")]
+    if features["|"]:
+        parts.append("pipe")
+    if k:
+        parts.append("environment setting")
+    for key, label in (("redirect", "redirect"), ("heredoc", "heredoc"), ("substitution", "command substitution")):
+        if features[key]:
+            parts.append(label)
+    return (name + " — " + "; ".join(parts) + tail)[:limit]
 
 
 def denials_from(data: dict) -> list[dict]:

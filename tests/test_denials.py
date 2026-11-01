@@ -2,6 +2,7 @@
 across the retry, shown apart from verification gaps, and a result without them still parses."""
 
 import json
+import re
 
 from review_harness import respond as RS
 from review_harness.providers import claude_code as CC
@@ -21,8 +22,9 @@ def test_denials_are_read_from_the_cli_result_and_tolerate_missing_fields():
         {"tool_name": "Write", "tool_input": {"file_path": "/etc/passwd"}},
         {"tool_name": "Bash"},                                       # no input
         "not a dict", 7]))
-    assert c.denials == [{"tool": "Bash", "command": "mkdir -p *** && cat > ***"},
-                         {"tool": "Write", "command": "***"}, {"tool": "Bash", "command": ""}]
+    assert c.denials == [{"tool": "Bash", "command": "mkdir … — 2 commands (&&); redirect"},
+                         {"tool": "Write", "command": "a command — 1 command"},
+                         {"tool": "Bash", "command": "an empty command — 1 command"}]
     assert CC.parse_output(cli_result()).denials == []               # field absent (older CLI, Codex)
     assert CC.parse_output(cli_result("oops")).denials == []          # malformed
     assert Completion("x").denials == []
@@ -126,26 +128,12 @@ def test_credentials_in_denied_commands_never_survive(cmd):
     assert len(out) <= CC.DENIAL_LIMIT
 
 
-@pytest.mark.parametrize("cmd, expect", [
-    ("python -I /tmp/check/run.py", "python -I ***"),
-    ("python -m pytest -q 2>&1 | tail -5", "python -m *** -q 2>&1 | tail -5"),
-    ("mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<'EOF'\nimport os\nprint(1)\nEOF",
-     "mkdir -p *** && cat > *** <<… (+3 more lines)"),
-    ("git clone https://github.com/o/r", "git *** ***"),
-    ('echo "unbalanced', "(command not shown: it could not be parsed safely)"),
-    ("python - <<'EOF'\nx\nEOF", "python - <<… (+2 more lines)"),
-])
-def test_the_shape_survives_and_values_do_not(cmd, expect):
-    """What B6 needs from a denial: which programs, flags and shell forms (chains, redirects, heredocs) were used."""
-    assert CC.safe_command(cmd) == expect
-
-
 def test_denials_are_kept_when_the_cli_ends_in_an_error():
     raw = cli_result([{"tool_name": "Bash", "tool_input": {"command": "python - <<'EOF'\nx\nEOF"}}],
                      is_error=True, subtype="error_max_turns")
     with pytest.raises(CC.CLIError) as e:
         CC.parse_output(raw)
-    assert e.value.denials == [{"tool": "Bash", "command": "python - <<… (+2 more lines)"}]
+    assert e.value.denials == [{"tool": "Bash", "command": "python … — 1 command; heredoc (+2 more lines)"}]
 
 
 def test_the_provider_keeps_denials_from_failed_attempts(monkeypatch):
@@ -162,7 +150,7 @@ def test_the_provider_keeps_denials_from_failed_attempts(monkeypatch):
     with pytest.raises(CC.CLIError):
         p.complete("s", [{"role": "user", "content": "u"}], 100)
     p.complete("s", [{"role": "user", "content": "u"}], 100)
-    assert [d["command"] for d in p.denials] == ["mkdir -p ***", "cat > ***"]
+    assert [d["command"] for d in p.denials] == ["mkdir … — 1 command", "cat … — 1 command; redirect"]
 
 
 def test_a_failed_response_still_reports_its_denials(tmp_path, monkeypatch):
@@ -231,7 +219,8 @@ def test_unknown_values_are_denied_by_default(cmd):
 
 
 def test_parse_errors_fail_closed():
-    assert CC.safe_command(f'cat "{FAKE}\nmore') == "(command not shown: it could not be parsed safely) (+1 more line)"
+    assert CC.safe_command(f'cat "{FAKE}\nmore') == ("a command (not described: its quoting could not be "
+                                                      "parsed) (+1 more line)")
 
 
 # ---- GPT Sol's re-check at 55f950c: role, not appearance ----------------------------------------------------------------
@@ -293,22 +282,47 @@ def test_unrecognised_or_attached_options_hide_every_argument(cmd):
 
 # ---- shape only (Xin Jie's decision after GPT Sol's re-checks of #10) --------------------------------------------------
 
+
+
+# ---- value-free by construction (GPT Sol's re-check at a792797) -------------------------------------------------------
+
+VOCAB_WORD = re.compile(r"[A-Za-z0-9]+")
+FIXED = {"a", "an", "command", "commands", "empty", "pipe", "redirect", "heredoc", "substitution", "environment",
+         "setting", "not", "described", "its", "quoting", "could", "be", "parsed", "more", "line", "lines"}
+
+
+def allowed_words(out: str) -> set[str]:
+    return set(VOCAB_WORD.findall(out)) - FIXED - CC.KNOWN_PROGRAMS - {str(i) for i in range(1000)}
+
+
+SECRET_WORDS = [FAKE, f"{FAKE}.py", f"/tmp/{FAKE}", f"--{FAKE}", f"-{FAKE}", "s3cr3tVal", "build", "status",
+                f"https://u:{FAKE}@x.io", f"{FAKE}=1", f"'|' {FAKE}", f'"&& {FAKE}"', f"'; {FAKE}'"]
+SHAPES = ["{s}", "tool {s}", "tool -a {s}", "python -c 'x' {s}", "python -c'x' {s}", "python -m mod {s}",
+          "git commit -m {s}", "{s} | python", "python x.py {s} && cat > {s}", "X={s} python", "curl -u {s} url",
+          "python - <<'EOF'\n{s}\nEOF", "echo $({s})", "redis-cli -a {s} ping"]
+
+
+@pytest.mark.parametrize("shape", SHAPES)
+@pytest.mark.parametrize("secret", SECRET_WORDS)
+def test_no_word_of_the_command_is_ever_copied(shape, secret):
+    out = CC.safe_command(shape.format(s=secret))
+    assert FAKE not in out and "s3cr3t" not in out, out
+    assert allowed_words(out) == set(), out                       # only the module's own words
+
+
 @pytest.mark.parametrize("cmd, expect", [
-    ("python -m pytest tests/t.py -k x", "python -m *** *** -k ***"),
-    (f"PASSWORD='a b {FAKE}' python x.py", "PASSWORD=*** python ***"),
-    (f"./{FAKE} -x", "*** -x"),                                # a program given as a path is hidden too
-    (f"/usr/bin/env {FAKE}=1 python", "*** *** ***"),
-    (f"cat {FAKE} | grep -n x > out.txt 2>&1", "cat *** | grep -n *** > *** 2>&1"),
-    ("python", "python"),
-    ("", ""),
+    ("mkdir -p /tmp/sim && cat > /tmp/sim/sim.py <<'EOF'\nimport os\nEOF",
+     "mkdir … — 2 commands (&&); redirect; heredoc (+2 more lines)"),
+    ("python - <<'EOF'\nx\nEOF", "python … — 1 command; heredoc (+2 more lines)"),
+    ("python -I /tmp/check/run.py", "python … — 1 command"),
+    ("python -m pytest -q 2>&1 | tail -5", "python … — 2 commands; pipe; redirect"),
+    (f"python -c 'import sys' '|' {FAKE}", "python … — 1 command"),            # a quoted | is data, not a pipe
+    (f"PASSWORD=x ./{FAKE}", "a command — 1 command; environment setting"),
+    (f"{FAKE} | python", "a command — 2 commands; pipe"),                       # only the first word is named
+    ("echo $(cat x)", "echo … — 1 command; command substitution"),
+    ('echo "unbalanced', "a command (not described: its quoting could not be parsed)"),
+    ("", "an empty command — 1 command"),
 ])
-def test_only_program_names_flags_and_operators_are_shown(cmd, expect):
+def test_what_a_denial_still_tells_us(cmd, expect):
+    """B6's purpose: on notes #20 the denials were about chained mkdir && cat > and a python heredoc."""
     assert CC.safe_command(cmd) == expect
-
-
-@pytest.mark.parametrize("word", ["hunter2", "hunter2.py", "/tmp/hunter2", "build", "status", "pytest",
-                                  "https://x.io/r", "a:b", "x=y"])
-def test_no_argument_value_is_ever_shown_whatever_it_looks_like(word):
-    for cmd in (f"tool {word}", f"tool -a {word}", f"tool --opt {word}", f"python -c x {word}", f"git {word}"):
-        assert CC.safe_command(cmd).split(" ", 1)[1].count("***") >= 1
-        assert word not in CC.safe_command(cmd).split(" ", 1)[1].replace("-a", "").replace("--opt", ""), cmd
