@@ -83,6 +83,16 @@ changes here say which behaviour they alter, and are announced before they merge
 Within a run, both jobs use the same harness commit (the gate resolves the ref once), and every review and response
 record stores it as `harness`, so a result can always be traced to the code that produced it.
 
+## Actions minutes
+
+`python -m review_harness.minutes --repo owner/name --since YYYY-MM-DD` reports a repo's GitHub Actions use per
+workflow and job, from the jobs API (every run attempt, every page, each job once). It keeps apart what it measures
+(job run time from start and end times), what it estimates (each job rounded up to a whole minute, as GitHub bills
+hosted runners) and what it cannot see: jobs without timestamps are counted, not guessed, and model provider costs
+(subscriptions, API credits) are not Actions minutes and are not included. `--allowance-user <login>` adds the
+account's included minutes and usage when the billing API returns them; otherwise it says they are unavailable.
+Needs `GITHUB_TOKEN` (or `GH_TOKEN`) with read access to Actions.
+
 ## Develop
 
 ```
