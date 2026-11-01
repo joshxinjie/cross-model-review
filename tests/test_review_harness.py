@@ -1841,3 +1841,62 @@ def test_pin_check_rejects_branches_tags_short_and_mismatched_shas():
     assert pin_problems(caller(sha[:7], sha[:7]))                        # short SHAs are ambiguous
     assert pin_problems(caller(sha, other)) == ["review: uses @" + sha + " and harness-ref " + other + " differ"]
     assert pin_problems(caller(sha.upper(), sha.upper()))                # GitHub prints SHAs in lower case
+
+
+# ---- label filter (v3 A1) ---------------------------------------------------------------------------------------------
+
+from gh_expr import evaluate as gh_eval, runs as gh_runs  # noqa: E402
+
+
+def gate_if(workflow="review.yml"):
+    return yaml.safe_load((REPO / ".github" / "workflows" / workflow).read_text())["jobs"]["gate"]["if"]
+
+
+def ctx(event_name, event, label_input="review"):
+    return {"github": {"event_name": event_name, "event": event}, "inputs": {"label": label_input}}
+
+
+def test_expression_evaluator_follows_github_rules():
+    assert gh_eval("github.event.missing.deeper == null", ctx("push", {})) is True
+    assert gh_eval("'Review' == 'review'", {}) is True                          # string == ignores case
+    assert gh_eval("startsWith('/review fable', '/review')", {}) is True
+    assert gh_eval("'' || 'x'", {}) == "x" and gh_eval("'a' && ''", {}) == ""
+    assert gh_runs("!(github.event.x)", ctx("push", {}))
+
+
+def test_only_the_review_label_starts_the_review_gate():
+    cond = gate_if()
+    pr = {"number": 5, "draft": False}
+
+    def labeled(name, label_input="review"):
+        return gh_runs(cond, ctx("pull_request", {"action": "labeled", "label": {"name": name}, "pull_request": pr},
+                                 label_input))
+    assert labeled("review")
+    assert not labeled("methodology-change") and not labeled("documentation")       # no runner, no minute
+    assert labeled("needs-review", label_input="needs-review") and not labeled("review", label_input="needs-review")
+    for action in ("opened", "reopened", "ready_for_review"):                    # review_on_open still reaches gate.py
+        assert gh_runs(cond, ctx("pull_request", {"action": action, "pull_request": pr})), action
+    comment = {"issue": {"number": 5, "pull_request": {"url": "u"}}}
+    assert gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/review fable"})))
+    assert not gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "thanks!"})))
+    assert not gh_runs(cond, ctx("issue_comment", {"issue": {"number": 5}, "comment": {"body": "/review"}}))
+    assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"scope": "pr", "pr": "5"}}))
+    assert gh_runs(cond, ctx("schedule", {"schedule": "23 5 6 1,4,7,10 *"}))
+
+
+def test_a_refused_review_label_is_still_removed():
+    """The filter must not skip the gate for the review label itself: the gate removes it when it says no."""
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "review.yml").read_text())
+    steps = {s.get("name"): s for s in wf["jobs"]["gate"]["steps"]}
+    remove = steps["Remove the label when no review follows"]
+    assert "github.event.label.name == inputs.label" in remove["if"] and "steps.gate.outputs.run != 'true'" in remove["if"]
+    review = {s.get("name"): s for s in wf["jobs"]["review"]["steps"]}
+    assert "github.event_name == 'pull_request'" in review["Remove the label so it can be added again"]["if"]
+
+
+def test_the_respond_gate_still_starts_only_on_respond_comments_and_dispatch():
+    cond = gate_if("respond.yml")
+    comment = {"issue": {"number": 5, "pull_request": {"url": "u"}}}
+    assert gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/respond"})))
+    assert not gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/review"})))
+    assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"pr": "5"}}))
