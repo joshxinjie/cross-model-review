@@ -1797,3 +1797,47 @@ def test_claude_code_hint_names_the_runnable_commands_and_settings():
     assert "python -m pytest -q" in hint and "`TRADELAB_PROVIDER=synthetic`" in hint and "do not put them" in hint
     assert "do not report that the tests fail" in hint
     assert "commit" in CCP.command_hint("respond", None) and "already in your environment" not in CCP.command_hint("review", {})
+
+
+# ---- pinning (v3 A4) --------------------------------------------------------------------------------------------------
+
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def pin_problems(caller: dict) -> list[str]:
+    """A caller workflow must run one fixed harness commit: `uses: …@<sha>` and `harness-ref: <sha>`, both the same
+    full SHA. A branch or tag can move, so `main == main` is not a pin."""
+    problems = []
+    for name, job in caller["jobs"].items():
+        uses = job.get("uses", "")
+        if "cross-model-review/" not in uses:
+            continue
+        ref, harness = uses.rpartition("@")[2], str(job.get("with", {}).get("harness-ref", ""))
+        if not FULL_SHA.fullmatch(ref):
+            problems.append(f"{name}: uses @{ref} is not a full commit SHA")
+        if not FULL_SHA.fullmatch(harness):
+            problems.append(f"{name}: harness-ref {harness!r} is not a full commit SHA")
+        if ref != harness:
+            problems.append(f"{name}: uses @{ref} and harness-ref {harness} differ")
+    return problems
+
+
+@pytest.mark.parametrize("workflow", ["review.yml", "respond.yml"])
+def test_templates_pin_one_full_harness_sha(workflow):
+    caller = yaml.safe_load((REPO / "templates" / "workflows" / workflow).read_text())
+    assert any("cross-model-review/" in j.get("uses", "") for j in caller["jobs"].values())
+    assert pin_problems(caller) == []
+
+
+def test_pin_check_rejects_branches_tags_short_and_mismatched_shas():
+    sha, other = "a" * 40, "b" * 40
+
+    def caller(ref, harness):
+        return {"jobs": {"review": {"uses": f"joshxinjie/cross-model-review/.github/workflows/review.yml@{ref}",
+                                    "with": {"harness-ref": harness}}}}
+    assert pin_problems(caller(sha, sha)) == []
+    assert pin_problems(caller("main", "main"))                          # equal, but a branch moves
+    assert pin_problems(caller("v1", "v1"))                              # a tag moves too
+    assert pin_problems(caller(sha[:7], sha[:7]))                        # short SHAs are ambiguous
+    assert pin_problems(caller(sha, other)) == ["review: uses @" + sha + " and harness-ref " + other + " differ"]
+    assert pin_problems(caller(sha.upper(), sha.upper()))                # GitHub prints SHAs in lower case

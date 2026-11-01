@@ -74,10 +74,14 @@ The harness reads a repo's settings from its default branch, so land them in two
 
 ## Pinning
 
-The templates call `@main`, so every repo gets fixes as soon as they merge here. Within a run, both jobs use the same
-harness commit (the gate resolves the ref once), and every review and response record stores it as `harness`, so a
-result can always be traced to the code that produced it. To freeze a repo on a known version instead, use a tag or
-commit in both `uses: …@<ref>` and `harness-ref: <ref>`.
+Pin each project to a reviewed commit of this repo: the same full 40-character SHA in `uses: …@<sha>` and in
+`harness-ref: <sha>`, as the templates do. A tag or branch can move (`@main` picks up every change here the moment it
+merges), so it is at most a readable label in a comment next to the SHA. Update a project by changing both SHAs in its
+own pull request; roll back the same way. A project still on `@main` gets every merged change at its next run, so
+changes here say which behaviour they alter, and are announced before they merge.
+
+Within a run, both jobs use the same harness commit (the gate resolves the ref once), and every review and response
+record stores it as `harness`, so a result can always be traced to the code that produced it.
 
 ## Develop
 
