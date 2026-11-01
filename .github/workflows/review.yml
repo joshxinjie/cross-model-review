@@ -37,10 +37,17 @@ on:
 
 jobs:
   gate:
-    # Cheap pre-filter so ordinary comments don't start a runner; gate.py makes the real decision.
+    # Cheap pre-filter so ordinary comments, labels other than the review label, and /respond fix PRs opening or
+    # being marked ready don't start a runner (each started job is billed at least a minute); gate.py makes the real
+    # decision. Fix PRs can still be reviewed with /review or the label (gate.py FIX_PR_PREFIXES).
     if: >-
-      github.event_name != 'issue_comment' ||
-      (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))
+      (github.event_name != 'issue_comment' ||
+       (github.event.issue.pull_request && startsWith(github.event.comment.body, '/review'))) &&
+      (github.event_name != 'pull_request' || github.event.action != 'labeled' ||
+       github.event.label.name == inputs.label) &&
+      (github.event_name != 'pull_request' || github.event.action == 'labeled' ||
+       !(startsWith(github.event.pull_request.head.ref, 'respond/pr') ||
+         startsWith(github.event.pull_request.head.ref, 'respond/codex/pr')))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     outputs:

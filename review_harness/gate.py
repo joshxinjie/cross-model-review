@@ -48,6 +48,17 @@ def codex_flag(model_user: dict) -> str:
     return "true" if model_user.get("provider") == "codex" else "false"
 
 
+# Branches /respond opens its fix PRs on (respond.yml: respond/ or respond/codex/, then pr<N>-<date>). They are not
+# reviewed automatically when they open or are marked ready: the review that counts is the reviewed PR's own, on its
+# final commit after the fix merges. `/review` and the review label still work on them. A cost-routing rule, not a
+# security exemption.
+FIX_PR_PREFIXES = ("respond/pr", "respond/codex/pr")
+
+
+def is_fix_pr_branch(branch: str) -> bool:
+    return any(branch.startswith(p) for p in FIX_PR_PREFIXES)
+
+
 def skip(message: str = "", **extra) -> dict:
     return {"run": "false", "message": message, **extra}
 
@@ -112,8 +123,12 @@ def resolve(event_name: str, event: dict, inputs: dict, cfg: dict, get_json, arc
             # Automatic review when a PR opens (triggers.review_on_open); drafts wait until marked ready.
             if not cfg["triggers"].get("review_on_open") or (event.get("pull_request") or {}).get("draft"):
                 return skip()
-            return pr_target(cfg, get_json(f"pulls/{event['pull_request']['number']}"), None, archive_files, today,
-                             last_review)
+            if is_fix_pr_branch(((event.get("pull_request") or {}).get("head") or {}).get("ref", "")):
+                return skip()                    # a /respond fix PR: see FIX_PR_PREFIXES
+            pr = get_json(f"pulls/{event['pull_request']['number']}")
+            if is_fix_pr_branch(((pr.get("head") or {}).get("ref")) or ""):
+                return skip()
+            return pr_target(cfg, pr, None, archive_files, today, last_review)
         if event.get("label", {}).get("name") != cfg["triggers"]["pr_label"]:
             return skip()
         return pr_target(cfg, get_json(f"pulls/{event['pull_request']['number']}"), None, archive_files, today,

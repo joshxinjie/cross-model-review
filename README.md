@@ -43,8 +43,12 @@ The harness reads a repo's settings from its default branch, so land them in two
    `generated_paths` lists files your own automation commits to PRs (e.g. backtest results): commits touching only
    those don't make a review stale, so `/respond` can still answer it.
 3. **Adjust the caller workflows**: the `install` command (e.g. `pip install -e ".[dev]"`) so reviewers can run your
-   tests, the `label`, and optionally `check` in `respond.yml`: a command run after the author's changes (tests, a PR
-   guard) whose result goes in the fix PR, since GitHub runs no checks on PRs a workflow opens.
+   tests, the `label`, and `check` in `respond.yml`: a command run after the author's changes (tests, a PR guard)
+   whose result goes in the fix PR, because checks on a PR the workflow opens with its own token may not start, or
+   may wait for your approval. The fix PR opens as a normal PR only when `check` exits 0; a failed check, no `check`,
+   or a check that did not finish opens a draft with the reason first. The author also reports, per finding, how it
+   verified the fix (`ran`, `read`, `none`) and the outcome; anything not shown to pass is listed as a verification
+   gap.
 4. **Repo settings → Actions → General**: allow GitHub Actions to create pull requests (project reviews and fix
    PRs are pull requests).
 5. **Secrets** (repo → Settings → Secrets and variables → Actions):
@@ -74,10 +78,24 @@ The harness reads a repo's settings from its default branch, so land them in two
 
 ## Pinning
 
-The templates call `@main`, so every repo gets fixes as soon as they merge here. Within a run, both jobs use the same
-harness commit (the gate resolves the ref once), and every review and response record stores it as `harness`, so a
-result can always be traced to the code that produced it. To freeze a repo on a known version instead, use a tag or
-commit in both `uses: …@<ref>` and `harness-ref: <ref>`.
+Pin each project to a reviewed commit of this repo: the same full 40-character SHA in `uses: …@<sha>` and in
+`harness-ref: <sha>`, as the templates do. A tag or branch can move (`@main` picks up every change here the moment it
+merges), so it is at most a readable label in a comment next to the SHA. Update a project by changing both SHAs in its
+own pull request; roll back the same way. A project still on `@main` gets every merged change at its next run, so
+changes here say which behaviour they alter, and are announced before they merge.
+
+Within a run, both jobs use the same harness commit (the gate resolves the ref once), and every review and response
+record stores it as `harness`, so a result can always be traced to the code that produced it.
+
+## Actions minutes
+
+`python -m review_harness.minutes --repo owner/name --since YYYY-MM-DD` reports a repo's GitHub Actions use per
+workflow and job, from the jobs API (every run attempt, every page, each job once). It keeps apart what it measures
+(job run time from start and end times), what it estimates (each job rounded up to a whole minute, as GitHub bills
+hosted runners) and what it cannot see: jobs without timestamps are counted, not guessed, and model provider costs
+(subscriptions, API credits) are not Actions minutes and are not included. `--allowance-user <login>` adds the
+account's included minutes and usage when the billing API returns them; otherwise it says they are unavailable.
+Needs `GITHUB_TOKEN` (or `GH_TOKEN`) with read access to Actions.
 
 ## Develop
 

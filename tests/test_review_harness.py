@@ -481,8 +481,10 @@ def env_with(findings):
             "review": review(verdict=derive_verdict("pr", findings), findings=findings)}
 
 
-def answer(fid, decision="accept", reason="right", changes="x.py"):
-    return {"finding_id": fid, "decision": decision, "reason": reason, "changes": changes}
+def answer(fid, decision="accept", reason="right", changes="x.py", method="ran", outcome="passed",
+           detail="pytest tests/test_x.py"):
+    return {"finding_id": fid, "decision": decision, "reason": reason, "changes": changes,
+            "verification": {"method": method, "outcome": outcome, "detail": detail}}
 
 
 def resp_json(answers, passed=True):
@@ -1643,7 +1645,8 @@ def test_respond_workflow_checks_the_authors_changes_without_a_token():
     steps = {s.get("name"): s for s in wf["jobs"]["respond"]["steps"]}
     check = steps["Check the author's changes"]
     assert check["env"]["GITHUB_TOKEN"] == "" and check["env"]["GH_TOKEN"] == ""
-    assert "git checkout -q -- . && git clean -fdq" in check["run"] and "summary.md" in check["run"]
+    assert "git checkout -q -- . && git clean -fdq" in check["run"]
+    assert 'echo "code=$code" >> "$GITHUB_OUTPUT"' in check["run"]          # the result goes to the fix PR (A2)
     names = list(steps)
     assert names.index("Author answers the findings") < names.index("Check the author's changes") \
         < names.index("Open the fix PR into the reviewed PR's branch")
@@ -1797,3 +1800,214 @@ def test_claude_code_hint_names_the_runnable_commands_and_settings():
     assert "python -m pytest -q" in hint and "`TRADELAB_PROVIDER=synthetic`" in hint and "do not put them" in hint
     assert "do not report that the tests fail" in hint
     assert "commit" in CCP.command_hint("respond", None) and "already in your environment" not in CCP.command_hint("review", {})
+
+
+# ---- pinning (v3 A4) --------------------------------------------------------------------------------------------------
+
+FULL_SHA = re.compile(r"[0-9a-f]{40}")
+
+
+def pin_problems(caller: dict) -> list[str]:
+    """A caller workflow must run one fixed harness commit: `uses: …@<sha>` and `harness-ref: <sha>`, both the same
+    full SHA. A branch or tag can move, so `main == main` is not a pin."""
+    problems = []
+    for name, job in caller["jobs"].items():
+        uses = job.get("uses", "")
+        if "cross-model-review/" not in uses:
+            continue
+        ref, harness = uses.rpartition("@")[2], str(job.get("with", {}).get("harness-ref", ""))
+        if not FULL_SHA.fullmatch(ref):
+            problems.append(f"{name}: uses @{ref} is not a full commit SHA")
+        if not FULL_SHA.fullmatch(harness):
+            problems.append(f"{name}: harness-ref {harness!r} is not a full commit SHA")
+        if ref != harness:
+            problems.append(f"{name}: uses @{ref} and harness-ref {harness} differ")
+    return problems
+
+
+@pytest.mark.parametrize("workflow", ["review.yml", "respond.yml"])
+def test_templates_pin_one_full_harness_sha(workflow):
+    caller = yaml.safe_load((REPO / "templates" / "workflows" / workflow).read_text())
+    assert any("cross-model-review/" in j.get("uses", "") for j in caller["jobs"].values())
+    assert pin_problems(caller) == []
+
+
+def test_pin_check_rejects_branches_tags_short_and_mismatched_shas():
+    sha, other = "a" * 40, "b" * 40
+
+    def caller(ref, harness):
+        return {"jobs": {"review": {"uses": f"joshxinjie/cross-model-review/.github/workflows/review.yml@{ref}",
+                                    "with": {"harness-ref": harness}}}}
+    assert pin_problems(caller(sha, sha)) == []
+    assert pin_problems(caller("main", "main"))                          # equal, but a branch moves
+    assert pin_problems(caller("v1", "v1"))                              # a tag moves too
+    assert pin_problems(caller(sha[:7], sha[:7]))                        # short SHAs are ambiguous
+    assert pin_problems(caller(sha, other)) == ["review: uses @" + sha + " and harness-ref " + other + " differ"]
+    assert pin_problems(caller(sha.upper(), sha.upper()))                # GitHub prints SHAs in lower case
+
+
+# ---- label filter (v3 A1) ---------------------------------------------------------------------------------------------
+
+from gh_expr import evaluate as gh_eval, runs as gh_runs  # noqa: E402
+
+
+def gate_if(workflow="review.yml"):
+    return yaml.safe_load((REPO / ".github" / "workflows" / workflow).read_text())["jobs"]["gate"]["if"]
+
+
+def ctx(event_name, event, label_input="review"):
+    return {"github": {"event_name": event_name, "event": event}, "inputs": {"label": label_input}}
+
+
+def test_expression_evaluator_follows_github_rules():
+    assert gh_eval("github.event.missing.deeper == null", ctx("push", {})) is True
+    assert gh_eval("'Review' == 'review'", {}) is True                          # string == ignores case
+    assert gh_eval("startsWith('/review fable', '/review')", {}) is True
+    assert gh_eval("'' || 'x'", {}) == "x" and gh_eval("'a' && ''", {}) == ""
+    assert gh_runs("!(github.event.x)", ctx("push", {}))
+
+
+def test_only_the_review_label_starts_the_review_gate():
+    cond = gate_if()
+    pr = {"number": 5, "draft": False}
+
+    def labeled(name, label_input="review"):
+        return gh_runs(cond, ctx("pull_request", {"action": "labeled", "label": {"name": name}, "pull_request": pr},
+                                 label_input))
+    assert labeled("review")
+    assert not labeled("methodology-change") and not labeled("documentation")       # no runner, no minute
+    assert labeled("needs-review", label_input="needs-review") and not labeled("review", label_input="needs-review")
+    for action in ("opened", "reopened", "ready_for_review"):                    # review_on_open still reaches gate.py
+        assert gh_runs(cond, ctx("pull_request", {"action": action, "pull_request": pr})), action
+    comment = {"issue": {"number": 5, "pull_request": {"url": "u"}}}
+    assert gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/review fable"})))
+    assert not gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "thanks!"})))
+    assert not gh_runs(cond, ctx("issue_comment", {"issue": {"number": 5}, "comment": {"body": "/review"}}))
+    assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"scope": "pr", "pr": "5"}}))
+    assert gh_runs(cond, ctx("schedule", {"schedule": "23 5 6 1,4,7,10 *"}))
+
+
+def test_a_refused_review_label_is_still_removed():
+    """The filter must not skip the gate for the review label itself: the gate removes it when it says no."""
+    wf = yaml.safe_load((REPO / ".github" / "workflows" / "review.yml").read_text())
+    steps = {s.get("name"): s for s in wf["jobs"]["gate"]["steps"]}
+    remove = steps["Remove the label when no review follows"]
+    assert "github.event.label.name == inputs.label" in remove["if"] and "steps.gate.outputs.run != 'true'" in remove["if"]
+    review = {s.get("name"): s for s in wf["jobs"]["review"]["steps"]}
+    assert "github.event_name == 'pull_request'" in review["Remove the label so it can be added again"]["if"]
+
+
+def test_the_respond_gate_still_starts_only_on_respond_comments_and_dispatch():
+    cond = gate_if("respond.yml")
+    comment = {"issue": {"number": 5, "pull_request": {"url": "u"}}}
+    assert gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/respond"})))
+    assert not gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/review"})))
+    assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"pr": "5"}}))
+
+
+# ---- /respond fix PRs are not reviewed automatically (Part 2) ---------------------------------------------------------
+
+FIX_BRANCHES = ["respond/pr20-2026-11-01", "respond/pr20-2026-11-01-2", "respond/codex/pr7-2026-11-01"]
+
+
+@pytest.mark.parametrize("branch", FIX_BRANCHES)
+def test_fix_prs_start_no_job_when_they_open_or_are_marked_ready(branch):
+    cond = gate_if()
+    pr = {"number": 21, "draft": False, "head": {"ref": branch}}
+    for action in ("opened", "reopened", "ready_for_review"):                       # no runner, no minute
+        assert not gh_runs(cond, ctx("pull_request", {"action": action, "pull_request": pr})), (branch, action)
+    # Explicit routes still work on a fix PR.
+    assert gh_runs(cond, ctx("pull_request", {"action": "labeled", "label": {"name": "review"}, "pull_request": pr}))
+    comment = {"issue": {"number": 21, "pull_request": {"url": "u"}}, "comment": {"body": "/review"}}
+    assert gh_runs(cond, ctx("issue_comment", comment))
+    assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"scope": "pr", "pr": "21"}}))
+
+
+@pytest.mark.parametrize("branch", ["codex/engine-fix", "feature/respond/pr1", "responder/pr3", "research/x",
+                                    "respond-notes", "review/2026-11"])
+def test_other_branches_still_reach_the_gate_when_they_open(branch):
+    pr = {"number": 5, "draft": False, "head": {"ref": branch}}
+    for action in ("opened", "reopened", "ready_for_review"):
+        assert gh_runs(gate_if(), ctx("pull_request", {"action": action, "pull_request": pr})), (branch, action)
+
+
+def test_gate_py_skips_automatic_reviews_of_fix_prs_but_not_explicit_ones():
+    on = copy.deepcopy(CFG)
+    on["triggers"]["review_on_open"] = True
+    for branch in FIX_BRANCHES:
+        for action in ("opened", "reopened", "ready_for_review"):
+            with_ref = {"action": action, "pull_request": {"number": 21, "draft": False, "head": {"ref": branch}}}
+            assert G.resolve("pull_request", with_ref, {}, on, lambda p: pr_json(21, branch), [], TODAY) == G.skip()
+            bare = {"action": action, "pull_request": {"number": 21, "draft": False}}     # ref only on the API
+            assert G.resolve("pull_request", bare, {}, on, lambda p: pr_json(21, branch), [], TODAY)["run"] == "false"
+        label = {"action": "labeled", "label": {"name": "review"}, "pull_request": {"number": 21}}
+        assert G.resolve("pull_request", label, {}, on, lambda p: pr_json(21, branch), [], TODAY)["run"] == "true"
+        out = G.resolve("issue_comment", comment_event("/review", number=21), {}, on,
+                        lambda p: pr_json(21, branch), [], TODAY)
+        assert out["run"] == "true", branch
+    opened = {"action": "opened", "pull_request": {"number": 7, "draft": False, "head": {"ref": "codex/x"}}}
+    assert G.resolve("pull_request", opened, {}, on, lambda p: pr_json(ref="codex/x"), [], TODAY)["run"] == "true"
+
+
+def test_the_fix_pr_prefixes_match_the_branches_respond_opens():
+    """respond.yml names fix branches ${FIX_PREFIX}pr<N>-<date>; the filter must match exactly those."""
+    wf = (REPO / ".github" / "workflows" / "respond.yml").read_text()
+    assert 'branch="${FIX_PREFIX}pr$PR-' in wf
+    from review_harness.config import fix_branch_prefix
+    prefixes = {fix_branch_prefix(a) for a in CFG["authors"].values()}         # every author's fix branches
+    assert {p + "pr" for p in prefixes} == set(G.FIX_PR_PREFIXES)
+    cond = gate_if()
+    assert all(f"startsWith(github.event.pull_request.head.ref, '{p}')" in cond for p in G.FIX_PR_PREFIXES)
+
+
+# ---- verification after undone edits (Part 1, GPT Sol on #9) ----------------------------------------------------------
+
+class CleanAuthor(Provider):
+    """Fake author that only edits x.py (nothing to undo)."""
+    model = "fake-author"
+
+    def __init__(self, work, reply):
+        self.work, self.reply = work, reply
+
+    def complete(self, system, messages, max_output_tokens):
+        (self.work / "x.py").write_text("x = 2\n")
+        return Completion(self.reply, 1, 1)
+
+
+def test_a_passing_check_that_relied_on_an_undone_edit_becomes_a_gap(tmp_path):
+    """The author edits x.py and REVIEW.md, checks, and reports ran · passed; the harness then undoes REVIEW.md. The
+    result may rest on the undone edit, so it must not read as verified, and the summary must not say no gaps."""
+    work = scratch_repo(tmp_path)
+    env = env_with([finding(id="F1", severity="major"), finding(id="F2", severity="minor"), finding(id="F3")])
+    reply = json.dumps(resp_json([answer("F1", detail="pytest -k f1"), answer("F2", "modify", method="read"),
+                                  answer("F3", "reject", "wrong", "none", method="read")]))
+    out = RS.respond(ROOT, CFG, EditingAuthor(work, [reply]), work, env, "2026-11-01-pr7-gpt.json", 7, "main",
+                     "respond/pr7-x", date="2026-11-01")
+    assert out["status"] == "done" and "REVIEW.md" in out["reverted"]
+    v = {r["finding_id"]: r["verification"] for r in out["response"]["responses"]}
+    for fid in ("F1", "F2"):                                       # changed files: outcome no longer known
+        assert v[fid]["outcome"] == "unknown" and v[fid]["invalidated_by_revert"] is True
+        assert "were undone after the author checked" in v[fid]["detail"] and "REVIEW.md" in v[fid]["detail"]
+    assert "it reported ran · passed: pytest -k f1" in v["F1"]["detail"]          # what the author said is kept
+    assert v["F3"] == {"method": "read", "outcome": "passed", "detail": "pytest tests/test_x.py"}   # reject: as is
+    s = out["summary"]
+    assert "no gaps" not in s and "Verification gaps (2)" in s
+    assert "F1 (accept): outcome unknown, because edits were undone after the author checked" in s
+    assert "| F1 | ✅ accept | ▶️ ran · ❔ unknown |" in s
+
+
+def test_verification_stands_when_nothing_was_undone(tmp_path):
+    work = scratch_repo(tmp_path)
+    env = env_with([finding(id="F1")])
+    out = RS.respond(ROOT, CFG, CleanAuthor(work, json.dumps(resp_json([answer("F1")]))), work, env,
+                     "2026-11-01-pr7-gpt.json", 7, "main", "respond/pr7-x")
+    assert out["reverted"] == [] and out["response"]["responses"][0]["verification"]["outcome"] == "passed"
+    assert "no gaps" in out["summary"]
+
+
+def test_invalidation_names_at_most_five_files():
+    resp = resp_json([answer("F1")])
+    out = RS.invalidate_verification(resp, [f"f{i}.py" for i in range(8)])
+    assert "f4.py and 3 more" in out["responses"][0]["verification"]["detail"]
+    assert resp["responses"][0]["verification"]["outcome"] == "passed"          # the input is not changed
+    assert RS.invalidate_verification(resp, []) is resp

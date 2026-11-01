@@ -26,9 +26,9 @@ jobs:
       contents: write          # push the respond/ branch; archive the response record
       pull-requests: write     # open the fix PR
       issues: write            # comment on the reviewed PR, react to /respond
-    uses: joshxinjie/cross-model-review/.github/workflows/respond.yml@main
+    uses: joshxinjie/cross-model-review/.github/workflows/respond.yml@47e920f5edacfe05d5234ee6bd651d81aef96582   # pin: same full SHA as harness-ref
     with:
-      harness-ref: main
+      harness-ref: 47e920f5edacfe05d5234ee6bd651d81aef96582   # keep identical to the SHA after @ above
       install: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
-      # check: "python -m pytest -q"     # run after the author's changes; the result goes in the fix PR
+      # check: "python -m pytest -q"     # run after the author's changes; the fix PR is a draft unless it exits 0
     secrets: inherit

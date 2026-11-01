@@ -42,9 +42,9 @@ jobs:
       contents: write          # review records on reviewer/archive, project-review PR branches
       pull-requests: write     # review comments, project-review PRs
       issues: write            # comments, reactions, removing the label
-    uses: joshxinjie/cross-model-review/.github/workflows/review.yml@main
+    uses: joshxinjie/cross-model-review/.github/workflows/review.yml@47e920f5edacfe05d5234ee6bd651d81aef96582   # pin: same full SHA as harness-ref
     with:
-      harness-ref: main                   # keep in step with the ref after @ above
+      harness-ref: 47e920f5edacfe05d5234ee6bd651d81aef96582   # keep identical to the SHA after @ above
       install: "if [ -f requirements.txt ]; then pip install -r requirements.txt; fi"
       label: review
     secrets: inherit

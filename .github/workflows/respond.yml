@@ -312,6 +312,7 @@ jobs:
         run: gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/summary.md"
 
       - name: Check the author's changes
+        id: check
         if: steps.respond.outputs.code == '0' && inputs.check != ''
         env:
           GITHUB_TOKEN: ""                 # runs the PR's code: no GitHub token
@@ -327,19 +328,10 @@ jobs:
           bash -c "$CHECK" > "$RUNNER_TEMP/check.txt" 2>&1
           code=$?
           set -e
+          # The check's own exit code decides the fix PR's status (review_harness/fixpr.py): this step succeeds
+          # either way, so its outcome says nothing about the check. No code recorded means unknown, not passed.
+          echo "code=$code" >> "$GITHUB_OUTPUT"
           git checkout -q -- . && git clean -fdq
-          {
-            echo
-            if [ "$code" = 0 ]; then echo "**✅ Checks passed** after the author's changes."
-            else echo "**❌ Checks failed** after the author's changes (exit $code): look before merging."; fi
-            echo
-            echo "<details><summary>Check output (last 60 lines)</summary>"
-            echo
-            echo '```'
-            tail -n 60 "$RUNNER_TEMP/check.txt"
-            echo '```'
-            echo "</details>"
-          } >> "$RUNNER_TEMP/summary.md"
 
       - name: Open the fix PR into the reviewed PR's branch
         if: steps.respond.outputs.code == '0'
@@ -348,6 +340,8 @@ jobs:
           HEAD_REF: ${{ needs.gate.outputs.head_ref }}
           REVIEW: ${{ needs.gate.outputs.review }}
           BRANCH: ${{ steps.work.outputs.branch }}
+          CHECK_CONFIGURED: ${{ inputs.check != '' }}
+          CHECK_CODE: ${{ steps.check.outputs.code }}
         run: |
           gh auth setup-git
           cd "$RUNNER_TEMP/work"
@@ -358,12 +352,27 @@ jobs:
             -m "Decisions logged in reviews/decisions.md."
           git push -q origin "$BRANCH"
           echo "$BRANCH" > "$RUNNER_TEMP/pushed_branch"
+          # Draft unless the configured check exited 0; a check that did not pass leads the description. Run from
+          # the trusted main checkout: `python -m` imports from the current folder first, and this is the PR's tree.
+          commit=$(git rev-parse HEAD)
+          (cd "$GITHUB_WORKSPACE" && python -m review_harness.fixpr --check-configured "$CHECK_CONFIGURED" \
+            --check-code "$CHECK_CODE" --summary "$RUNNER_TEMP/summary.md" --check-output "$RUNNER_TEMP/check.txt" \
+            --commit "$commit" --body-out "$RUNNER_TEMP/body.md") > "$RUNNER_TEMP/fixpr.txt"
+          draft=$(sed -n 's/^draft=//p' "$RUNNER_TEMP/fixpr.txt")
+          title="Author response to the review of #$PR"
           # Opening a PR needs "Allow GitHub Actions to create and approve pull requests" in the repo's settings.
           # Keep GitHub's answer so the failure comment can show it.
-          if ! url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="Author response to the review of #$PR" \
-                -f head="$BRANCH" -f base="$HEAD_REF" -F body=@"$RUNNER_TEMP/summary.md" --jq .html_url \
-                2> "$RUNNER_TEMP/gh_err.txt"); then
-            { echo "Opening the fix PR failed: $(head -c 500 "$RUNNER_TEMP/gh_err.txt")"
+          # Fail closed: a fix PR whose check did not pass opens as a draft or not at all, never as a normal PR.
+          url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="$title" -f head="$BRANCH" -f base="$HEAD_REF" \
+                -F draft="$draft" -F body=@"$RUNNER_TEMP/body.md" --jq .html_url 2> "$RUNNER_TEMP/gh_err.txt") || url=""
+          if [ -z "$url" ]; then
+            # The failure comment shows the first 800 characters, so the draft explanation comes first.
+            { if [ "$draft" = true ]; then
+                echo "The fix PR was to open as a draft (checks: $(sed -n 's/^state=//p' "$RUNNER_TEMP/fixpr.txt")) and GitHub"
+                echo "refused it, so it was not opened as a normal PR instead. The fixes are on branch $BRANCH:"
+                echo "open a draft PR from it into $HEAD_REF by hand, or run /respond again."
+              fi
+              echo "Opening the fix PR failed: $(head -c 400 "$RUNNER_TEMP/gh_err.txt")"
               echo "If it says Actions may not create pull requests: Settings -> Actions -> General -> Workflow"
               echo "permissions -> allow GitHub Actions to create and approve pull requests."; } \
               > "$RUNNER_TEMP/respond_error.txt"
@@ -379,7 +388,7 @@ jobs:
             git push -q origin "$BRANCH"
           fi
           printf '%s\n\n%s\n' "Author response ready for your decision: $url" \
-            "$(head -c 1500 "$RUNNER_TEMP/summary.md")" > "$RUNNER_TEMP/comment.md"
+            "$(head -c 1500 "$RUNNER_TEMP/body.md")" > "$RUNNER_TEMP/comment.md"
           gh api "repos/$GITHUB_REPOSITORY/issues/$PR/comments" -F body=@"$RUNNER_TEMP/comment.md"
 
       - name: Archive the response record
