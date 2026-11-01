@@ -159,17 +159,35 @@ def test_the_pr_tree_cannot_replace_the_harness_module(runner):
     assert "draft=true" in pulls_call(runner)[0]
 
 
-def test_without_draft_support_a_normal_pr_says_it_is_not_ready(runner):
+def test_a_refused_draft_fails_closed(runner):
+    """No normal PR in place of a refused draft (GPT Sol on #9): the run fails and says so; the fixes stay pushed."""
     r = pr_step(runner, "true", "1", GH_NO_DRAFT="1")
-    assert r.returncode == 0, r.stderr
+    assert r.returncode == 1
     calls = pulls_call(runner)
-    assert len(calls) == 2 and "draft=true" in calls[0] and "draft=" not in calls[1]
-    assert "[Not ready: checks did not pass]" in calls[1]
+    assert len(calls) == 1 and "draft=true" in calls[0]                    # one attempt, as a draft only
+    err = (runner["temp"] / "respond_error.txt").read_text()
+    assert err.startswith("The fix PR was to open as a draft (checks: failed)")
+    assert "respond/pr7" in err and "not opened as a normal PR" in err
+    assert len(err[:800].splitlines()) >= 3                                 # the explanation fits the comment
+    assert not any("issues/7/comments" in c for c in runner["calls"].read_text().splitlines())
+    assert "| #42 |" not in (runner["work"] / "reviews" / "decisions.md").read_text()
+    remote = git(runner["work"], "ls-remote", "origin", "respond/pr7")
+    assert remote.strip(), "the fix branch stays pushed"
 
 
-def test_a_passing_check_is_never_retried_as_not_ready(runner):
+def test_a_passing_check_opens_a_normal_pr_in_one_attempt(runner):
     r = pr_step(runner, "true", "0", GH_NO_DRAFT="1")
-    assert r.returncode == 0 and len(pulls_call(runner)) == 1 and "Not ready" not in pulls_call(runner)[0]
+    assert r.returncode == 0 and len(pulls_call(runner)) == 1 and "draft=false" in pulls_call(runner)[0]
+
+
+def test_other_pr_failures_do_not_mention_drafts(runner):
+    gh = Path(runner["env"]["PATH"].split(":")[0]) / "gh"
+    gh.write_text(gh.read_text().replace('if [[ "$*" == *"draft=true"* ]] && [ -n "$GH_NO_DRAFT" ]; then',
+                                         'if [ -n "$GH_FAIL" ]; then'))
+    r = pr_step(runner, "true", "0", GH_FAIL="1")
+    assert r.returncode == 1
+    err = (runner["temp"] / "respond_error.txt").read_text()
+    assert err.startswith("Opening the fix PR failed") and "was to open as a draft" not in err   # a passing check
 
 
 # ---- the author's verification -----------------------------------------------------------------------------------------

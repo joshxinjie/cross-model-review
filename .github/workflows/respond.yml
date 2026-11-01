@@ -362,16 +362,17 @@ jobs:
           title="Author response to the review of #$PR"
           # Opening a PR needs "Allow GitHub Actions to create and approve pull requests" in the repo's settings.
           # Keep GitHub's answer so the failure comment can show it.
+          # Fail closed: a fix PR whose check did not pass opens as a draft or not at all, never as a normal PR.
           url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="$title" -f head="$BRANCH" -f base="$HEAD_REF" \
                 -F draft="$draft" -F body=@"$RUNNER_TEMP/body.md" --jq .html_url 2> "$RUNNER_TEMP/gh_err.txt") || url=""
-          if [ -z "$url" ] && [ "$draft" = true ] && grep -qi draft "$RUNNER_TEMP/gh_err.txt"; then
-            # Some plans have no draft PRs for private repos: open a normal one that says so in its title.
-            url=$(gh api "repos/$GITHUB_REPOSITORY/pulls" -f title="[Not ready: checks did not pass] $title" \
-                  -f head="$BRANCH" -f base="$HEAD_REF" -F body=@"$RUNNER_TEMP/body.md" --jq .html_url \
-                  2> "$RUNNER_TEMP/gh_err.txt") || url=""
-          fi
           if [ -z "$url" ]; then
-            { echo "Opening the fix PR failed: $(head -c 500 "$RUNNER_TEMP/gh_err.txt")"
+            # The failure comment shows the first 800 characters, so the draft explanation comes first.
+            { if [ "$draft" = true ]; then
+                echo "The fix PR was to open as a draft (checks: $(sed -n 's/^state=//p' "$RUNNER_TEMP/fixpr.txt")) and GitHub"
+                echo "refused it, so it was not opened as a normal PR instead. The fixes are on branch $BRANCH:"
+                echo "open a draft PR from it into $HEAD_REF by hand, or run /respond again."
+              fi
+              echo "Opening the fix PR failed: $(head -c 400 "$RUNNER_TEMP/gh_err.txt")"
               echo "If it says Actions may not create pull requests: Settings -> Actions -> General -> Workflow"
               echo "permissions -> allow GitHub Actions to create and approve pull requests."; } \
               > "$RUNNER_TEMP/respond_error.txt"
