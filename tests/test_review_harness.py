@@ -1903,3 +1903,58 @@ def test_the_respond_gate_still_starts_only_on_respond_comments_and_dispatch():
     assert gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/respond"})))
     assert not gh_runs(cond, ctx("issue_comment", dict(comment, comment={"body": "/review"})))
     assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"pr": "5"}}))
+
+
+# ---- /respond fix PRs are not reviewed automatically (Part 2) ---------------------------------------------------------
+
+FIX_BRANCHES = ["respond/pr20-2026-11-01", "respond/pr20-2026-11-01-2", "respond/codex/pr7-2026-11-01"]
+
+
+@pytest.mark.parametrize("branch", FIX_BRANCHES)
+def test_fix_prs_start_no_job_when_they_open_or_are_marked_ready(branch):
+    cond = gate_if()
+    pr = {"number": 21, "draft": False, "head": {"ref": branch}}
+    for action in ("opened", "reopened", "ready_for_review"):                       # no runner, no minute
+        assert not gh_runs(cond, ctx("pull_request", {"action": action, "pull_request": pr})), (branch, action)
+    # Explicit routes still work on a fix PR.
+    assert gh_runs(cond, ctx("pull_request", {"action": "labeled", "label": {"name": "review"}, "pull_request": pr}))
+    comment = {"issue": {"number": 21, "pull_request": {"url": "u"}}, "comment": {"body": "/review"}}
+    assert gh_runs(cond, ctx("issue_comment", comment))
+    assert gh_runs(cond, ctx("workflow_dispatch", {"inputs": {"scope": "pr", "pr": "21"}}))
+
+
+@pytest.mark.parametrize("branch", ["codex/engine-fix", "feature/respond/pr1", "responder/pr3", "research/x",
+                                    "respond-notes", "review/2026-11"])
+def test_other_branches_still_reach_the_gate_when_they_open(branch):
+    pr = {"number": 5, "draft": False, "head": {"ref": branch}}
+    for action in ("opened", "reopened", "ready_for_review"):
+        assert gh_runs(gate_if(), ctx("pull_request", {"action": action, "pull_request": pr})), (branch, action)
+
+
+def test_gate_py_skips_automatic_reviews_of_fix_prs_but_not_explicit_ones():
+    on = copy.deepcopy(CFG)
+    on["triggers"]["review_on_open"] = True
+    for branch in FIX_BRANCHES:
+        for action in ("opened", "reopened", "ready_for_review"):
+            with_ref = {"action": action, "pull_request": {"number": 21, "draft": False, "head": {"ref": branch}}}
+            assert G.resolve("pull_request", with_ref, {}, on, lambda p: pr_json(21, branch), [], TODAY) == G.skip()
+            bare = {"action": action, "pull_request": {"number": 21, "draft": False}}     # ref only on the API
+            assert G.resolve("pull_request", bare, {}, on, lambda p: pr_json(21, branch), [], TODAY)["run"] == "false"
+        label = {"action": "labeled", "label": {"name": "review"}, "pull_request": {"number": 21}}
+        assert G.resolve("pull_request", label, {}, on, lambda p: pr_json(21, branch), [], TODAY)["run"] == "true"
+        out = G.resolve("issue_comment", comment_event("/review", number=21), {}, on,
+                        lambda p: pr_json(21, branch), [], TODAY)
+        assert out["run"] == "true", branch
+    opened = {"action": "opened", "pull_request": {"number": 7, "draft": False, "head": {"ref": "codex/x"}}}
+    assert G.resolve("pull_request", opened, {}, on, lambda p: pr_json(ref="codex/x"), [], TODAY)["run"] == "true"
+
+
+def test_the_fix_pr_prefixes_match_the_branches_respond_opens():
+    """respond.yml names fix branches ${FIX_PREFIX}pr<N>-<date>; the filter must match exactly those."""
+    wf = (REPO / ".github" / "workflows" / "respond.yml").read_text()
+    assert 'branch="${FIX_PREFIX}pr$PR-' in wf
+    from review_harness.config import fix_branch_prefix
+    prefixes = {fix_branch_prefix(a) for a in CFG["authors"].values()}         # every author's fix branches
+    assert {p + "pr" for p in prefixes} == set(G.FIX_PR_PREFIXES)
+    cond = gate_if()
+    assert all(f"startsWith(github.event.pull_request.head.ref, '{p}')" in cond for p in G.FIX_PR_PREFIXES)
