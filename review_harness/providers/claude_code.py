@@ -162,28 +162,77 @@ def redact(text: str, limit: int = DENIAL_LIMIT) -> str:
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-OPERATORS = {"&&", "||", "|", ";", ">", ">>", "<", "&", "2>&1", "2>/dev/null", ">/dev/null"}
-SHORT_FLAG = re.compile(r"^-[A-Za-z0-9]{1,2}$")              # -p, -I, -q, -k, -5
-LONG_FLAG = re.compile(r"^--[a-z][a-z0-9-]*$")              # --tb, --maxfail (a value after it is still hidden)
-PATH_WORD = re.compile(r"^(?:[A-Za-z0-9_.~-]*/[A-Za-z0-9_./~-]*|[A-Za-z0-9_-]+\.[A-Za-z0-9]{1,5})$")
+OPERATORS = {"&&", "||", "|", ";", "&"}
+REDIRECTS = {">", ">>", "<", "2>", "2>>"}
+FIXED_REDIRECTS = {"2>&1", "2>/dev/null", ">/dev/null", "&>/dev/null"}
+FLAG_NAME = re.compile(r"^(?:-[A-Za-z0-9]{1,2}|--[a-z][a-z0-9-]*)$")   # a flag's name, never with a value attached
+PROGRAM = re.compile(r"^[A-Za-z0-9_.+/-]{1,60}$")
+PATH_WORD = re.compile(r"^[A-Za-z0-9_.~/-]{1,160}$")
 PLAIN_URL = re.compile(r"^(https?|ssh|git)://[A-Za-z0-9.-]+(?::\d+)?(/[A-Za-z0-9_./~-]*)?$")
-# Words that say what was run, kept wherever they appear. Anything else in argument position is hidden.
-KNOWN_WORDS = {
-    "python", "python3", "pytest", "pip", "pip3", "uv", "node", "npm", "npx", "bash", "sh", "make", "git", "gh",
-    "cat", "cd", "ls", "mkdir", "rm", "cp", "mv", "touch", "echo", "printf", "head", "tail", "grep", "rg", "sed",
-    "awk", "find", "xargs", "wc", "sort", "diff", "tee", "env", "timeout", "curl", "wget", "jq",
-    "status", "log", "show", "add", "commit", "push", "pull", "fetch", "checkout", "switch", "reset", "rebase",
-    "stash", "branch", "merge", "clone", "install", "run", "test", "build", "tool", "module",
+SAFE_MODULES = {"pytest", "pip", "unittest", "venv", "http.server", "json.tool", "py_compile", "compileall"}
+GIT_SUBCOMMANDS = {"status", "log", "show", "diff", "add", "commit", "push", "pull", "fetch", "checkout", "switch",
+                   "reset", "rebase", "stash", "branch", "merge", "clone", "rm", "mv", "restore", "worktree"}
+FILE_TOOLS = {"cat", "ls", "cd", "mkdir", "touch", "rm", "head", "tail", "wc", "cp", "mv", "stat", "file"}
+# Flags known to take no value, per program; any other flag's next word is hidden.
+NO_VALUE = {
+    "python": {"-I", "-u", "-B", "-O", "-E", "-s", "-S", "-q", "-v", "-b", "-P"},
+    "pytest": {"-q", "-v", "-x", "-s", "-l", "-vv", "-qq", "--lf", "--ff", "--co", "--no-header"},
+    "file": {"-p", "-r", "-f", "-a", "-l", "-la", "-n", "-v", "-R"},
 }
 
 
+def _program_view(prog: str, args: list[str]) -> list[str]:
+    """What a command's arguments may show, by role. Default deny: every value is ***, except in forms whose role is
+    understood (a python script path or `-m <module>`, a file tool's paths, pytest's test paths, a git subcommand
+    and `git clone <plain url>`). Flag names are shown; a value attached to a flag or after one is not."""
+    base = prog.rsplit("/", 1)[-1]
+    kind = ("python" if re.fullmatch(r"python3?(\.\d+)?", base) else "pytest" if base == "pytest"
+            else "file" if base in FILE_TOOLS else "git" if base == "git" else "other")
+    no_value = NO_VALUE.get(kind, set())
+    out, hide_next, positional = [], False, 0
+    for i, w in enumerate(args):
+        if hide_next:
+            keep = kind == "python" and args[i - 1] == "-m" and w in SAFE_MODULES
+            out.append(w if keep else "***")
+            hide_next = False
+            if keep:
+                kind, no_value = ("pytest", NO_VALUE["pytest"]) if w == "pytest" else ("other", set())
+            continue
+        if kind == "python" and w == "-":
+            out.append(w)                                  # the script comes from stdin
+            positional += 1
+            continue
+        if FLAG_NAME.match(w):
+            out.append(w)
+            hide_next = w not in no_value and not (kind == "file" and re.fullmatch(r"-\d+", w))
+            continue
+        if w.startswith("-"):
+            out.append("***")                              # -pSECRET, --password=x
+            continue
+        positional += 1
+        if kind == "python" and positional == 1 and w.endswith(".py") and PATH_WORD.match(w):
+            out.append(w)                                  # the script; its own arguments stay hidden
+        elif kind in ("file", "pytest") and PATH_WORD.match(w):
+            out.append(w)
+        elif kind == "git" and positional == 1 and w in GIT_SUBCOMMANDS:
+            out.append(w)
+        elif kind == "git" and positional == 2 and args_has(args, "clone") and PLAIN_URL.match(w):
+            out.append(w)
+        else:
+            out.append("***")
+    return out
+
+
+def args_has(args: list[str], word: str) -> bool:
+    return word in [a for a in args if not a.startswith("-")][:1]
+
+
 def safe_command(text: str, limit: int = DENIAL_LIMIT) -> str:
-    """A denied command as diagnostics, default deny. Only the first line is kept (a heredoc's body or a script is
-    dropped and counted). It is split with shell quoting first, so masking never breaks a quoted value; a line that
-    can't be split shows nothing. Then a word is kept only if it says what was run: the program at the start of each
-    command, a known tool or subcommand name, a flag (never its value), a path, a shell operator, a URL with no
-    credentials or query. Every other word, every NAME=value and every value after a flag becomes ***. Known
-    secret shapes are masked again at the end; cut last."""
+    """A denied command as diagnostics, default deny by role, never by how a word looks. Only the first line is kept
+    (a heredoc's body or a script is dropped and counted). It is split with shell quoting first; a line that can't be
+    split shows nothing. Each command shows its program name and flag names; its argument values are *** except in
+    the few forms whose role is understood (_program_view). `NAME=value` shows only NAME; a redirection keeps a
+    file target. Known secret shapes are masked again at the end; cut last."""
     import shlex
     lines = str(text).splitlines() or [""]
     more = len(lines) - 1
@@ -192,32 +241,38 @@ def safe_command(text: str, limit: int = DENIAL_LIMIT) -> str:
         words = shlex.split(lines[0], posix=True, comments=False)
     except ValueError:
         return "(command not shown: it could not be parsed safely)" + tail
-    out, start, after_flag = [], True, False
-    for w in words:
-        if w in OPERATORS or w.startswith("<<"):
-            out.append(w if w in OPERATORS else "<<…")
-            start, after_flag = w in OPERATORS, False
-            continue
-        if w == "-" or SHORT_FLAG.match(w) or LONG_FLAG.match(w):
-            out.append(w)
-            start, after_flag = False, True
-            continue
-        if "=" in w and not w.startswith("-") and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", w):
-            out.append(w.split("=", 1)[0] + "=***")        # an environment assignment: never its value
-            continue
-        if w.startswith("-"):                               # -pSECRET, --password=x
-            out.append(w.split("=", 1)[0] + "=***" if w.startswith("--") and "=" in w else "***")
-            start, after_flag = False, False
-            continue
-        known = w in KNOWN_WORDS or (start and re.match(r"^[A-Za-z0-9_.+-]{1,40}$", w))
-        is_path = PATH_WORD.match(w) and len(w) <= 120
-        if after_flag and not is_path and w not in KNOWN_WORDS:
-            out.append("***")                               # a flag's value: default deny
-        elif known or is_path or PLAIN_URL.match(w):
-            out.append(w)
-        else:
-            out.append("***")
-        start, after_flag = False, False
+    out, i = [], 0
+    while i < len(words):
+        # one simple command: assignments, program, arguments, up to an operator
+        j = i
+        while j < len(words) and words[j] not in OPERATORS:
+            j += 1
+        part, k = words[i:j], 0
+        while k < len(part) and re.match(r"^[A-Za-z_][A-Za-z0-9_]*=", part[k]):
+            out.append(part[k].split("=", 1)[0] + "=***")
+            k += 1
+        if k < len(part):
+            prog = part[k]
+            out.append(prog if PROGRAM.match(prog) else "***")
+            args, redir = [], []
+            m = k + 1
+            while m < len(part):
+                w = part[m]
+                if w in FIXED_REDIRECTS:
+                    redir.append(w)
+                elif w in REDIRECTS:
+                    target = part[m + 1] if m + 1 < len(part) else ""
+                    redir += [w, target if PATH_WORD.match(target or "") else "***"]
+                    m += 1
+                elif w.startswith("<<"):
+                    redir.append("<<…")
+                else:
+                    args.append(w)
+                m += 1
+            out += _program_view(prog, args) + redir
+        if j < len(words):
+            out.append(words[j])
+        i = j + 1
     return redact(" ".join(out) + tail, limit)
 
 

@@ -230,3 +230,31 @@ def test_unknown_values_are_denied_by_default(cmd):
 
 def test_parse_errors_fail_closed():
     assert CC.safe_command(f'cat "{FAKE}\nmore') == "(command not shown: it could not be parsed safely) (+1 more line)"
+
+
+# ---- GPT Sol's re-check at 55f950c: role, not appearance ----------------------------------------------------------------
+
+@pytest.mark.parametrize("cmd, secret", [
+    (f"redis-cli -a {FAKE}.txt ping", FAKE),                    # path-shaped password
+    (f"redis-cli -a /tmp/{FAKE} ping", FAKE),
+    ("redis-cli -a build ping", "build"),                       # a password spelled like a known word
+    ("mysql -u root -p status db", "status"),
+    ("tool --password /tmp/x.py", "/tmp/x.py"),
+    ("python -c build", "build"),
+    (f"python x.py {FAKE}.txt", FAKE),                          # a script's own arguments
+    ("git commit -m build", "build"),
+    (f"git push https://u:{FAKE}@x.io/o/r", FAKE),
+    ("sshpass -p build.py ssh host", "build.py"),
+    ("env SECRET=build python x.py", "build"),
+])
+def test_a_value_is_hidden_whatever_it_looks_like(cmd, secret):
+    out = CC.safe_command(cmd)
+    assert secret not in out, (cmd, out)
+
+
+def test_only_understood_forms_show_arguments():
+    assert CC.safe_command("cat build.txt") == "cat build.txt"                     # a file tool's path
+    assert CC.safe_command("python -m build") == "python -m ***"                   # not a known module
+    assert CC.safe_command("python -m pytest tests/test_x.py -k f") == "python -m pytest tests/test_x.py -k ***"
+    assert CC.safe_command("unknowntool sub arg --flag val") == "unknowntool *** *** --flag ***"
+    assert CC.safe_command("git log --oneline -3") == "git log --oneline ***"     # -3's role isn't known for git
