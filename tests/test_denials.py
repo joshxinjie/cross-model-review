@@ -258,3 +258,26 @@ def test_only_understood_forms_show_arguments():
     assert CC.safe_command("python -m pytest tests/test_x.py -k f") == "python -m pytest tests/test_x.py -k ***"
     assert CC.safe_command("unknowntool sub arg --flag val") == "unknowntool *** *** --flag ***"
     assert CC.safe_command("git log --oneline -3") == "git log --oneline ***"     # -3's role isn't known for git
+
+
+# ---- GPT Sol's re-check at c89fb64: interpreter options end at code, module or script --------------------------------
+
+@pytest.mark.parametrize("cmd, secret", [
+    (f"python -c 'import sys; print(len(sys.argv[1]))' {FAKE}.py", FAKE),   # after -c
+    (f"python -m build {FAKE}.py", FAKE),                                   # after an unknown module
+    (f"python -m pip install {FAKE}.py", FAKE),                             # after a known non-test module
+    (f"python x.py y.py {FAKE}.py", FAKE),                                  # after the script
+    (f"python - {FAKE}.py", FAKE),                                          # after a script from stdin
+    (f"python3 -c x -m pytest {FAKE}.py", FAKE),                            # -m after -c is the code's argument
+    (f"python -I -c x {FAKE}.py", FAKE),
+])
+def test_arguments_after_code_module_or_script_are_hidden(cmd, secret):
+    assert secret not in CC.safe_command(cmd), CC.safe_command(cmd)
+
+
+def test_interpreter_option_transitions():
+    assert CC.safe_command("python -I /tmp/check/run.py") == "python -I /tmp/check/run.py"
+    assert CC.safe_command("python -m pytest tests/t.py -k x") == "python -m pytest tests/t.py -k ***"
+    assert CC.safe_command("python -c x a.py") == "python -c *** ***"
+    assert CC.safe_command("python x.py y.py -c z") == "python x.py *** -c ***"
+    assert CC.safe_command("python - a.py") == "python - ***"

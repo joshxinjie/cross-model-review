@@ -192,15 +192,18 @@ def _program_view(prog: str, args: list[str]) -> list[str]:
     out, hide_next, positional = [], False, 0
     for i, w in enumerate(args):
         if hide_next:
-            keep = kind == "python" and args[i - 1] == "-m" and w in SAFE_MODULES
+            selects = kind == "python" and args[i - 1] in ("-c", "-m")   # code or a module: what python runs
+            keep = selects and args[i - 1] == "-m" and w in SAFE_MODULES
             out.append(w if keep else "***")
             hide_next = False
-            if keep:
-                kind, no_value = ("pytest", NO_VALUE["pytest"]) if w == "pytest" else ("other", set())
+            if selects:
+                # Interpreter options end here. Every later word is an argument to the code or module, so it is
+                # hidden; only `-m pytest` keeps its own role (test paths).
+                kind, no_value = ("pytest", NO_VALUE["pytest"]) if keep and w == "pytest" else ("other", set())
             continue
         if kind == "python" and w == "-":
             out.append(w)                                  # the script comes from stdin
-            positional += 1
+            kind, no_value = "other", set()                # interpreter options end here too
             continue
         if FLAG_NAME.match(w):
             out.append(w)
@@ -212,6 +215,7 @@ def _program_view(prog: str, args: list[str]) -> list[str]:
         positional += 1
         if kind == "python" and positional == 1 and w.endswith(".py") and PATH_WORD.match(w):
             out.append(w)                                  # the script; its own arguments stay hidden
+            kind, no_value = "other", set()                # interpreter options end at the script
         elif kind in ("file", "pytest") and PATH_WORD.match(w):
             out.append(w)
         elif kind == "git" and positional == 1 and w in GIT_SUBCOMMANDS:
