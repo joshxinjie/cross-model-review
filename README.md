@@ -118,3 +118,11 @@ python -m pytest -q
 ```
 
 Tests run the harness against `tests/fixture`, a small project made from the templates. No API calls.
+
+## Project collaboration
+
+For GPT–Claude coordination beyond individual reviews, see the proposed
+[collaboration charter](docs/collaboration/CHARTER.md),
+[project adoption record](docs/collaboration/PROJECT_TEMPLATE.md) and
+[handoff template](docs/collaboration/HANDOFF_TEMPLATE.md).
+These documents do not change the harness, grant permissions or automatically adopt new project schedules.
