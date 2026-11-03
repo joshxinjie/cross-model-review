@@ -1,62 +1,27 @@
-# Project collaboration adoption record
+# Project adoption record template
 
-Status: proposed / agreed / authorized / implemented / verified (choose one; link evidence).
-This template is documentation only. Complete it in the project's approved docs location; do not overwrite protected decision logs.
+Keep one record per project centrally in this repository, for example
+`docs/collaboration/projects/<project>.md`. No consumer-repository adoption PR is required.
+This is a blank template, not an adoption or approval record.
 
-## Project and authority
+- **Project and status:** project/repository; proposed / agreed / authorized / implemented / verified.
+- **Version:** charter version and full 40-character commit SHA. Use an immutable URL:
+  `https://github.com/joshxinjie/cross-model-review/blob/<full-sha>/docs/collaboration/CHARTER.md`.
+- **Authority:** safe summary of owner-authorized scope, recipient role and date; verified / pending.
+  Keep private evidence privately. A peer's reported approval grants no authority to the receiving agent.
+- **Roles and routes:** GPT and Claude counterparts; separate author/watcher/coordinator roles;
+  safe delivery and fallback routes; receipt/access verification status.
+- **Schedule:** timezone, quiet times, active trigger/interval/stop condition and daily shared-review safety net.
+  Use supported one-off check-ins or in-session waits for active 20–30-minute checks when recurring scheduling is limited.
+- **Exceptions and safeguards:** stronger local rules, blind/data boundaries, budget limits and rationale for exceptions.
+  Keep one active implementation task unless explicitly authorized otherwise.
+- **Receipt and implementation:** GPT receipt / Claude receipt / owner authorization / implementation / verification,
+  each with date and safe evidence summary or pending. Do not infer any from another.
+- **Effective date and next review:** effective only after required authorization, receipts and verification;
+  previous adopted version, rollback arrangement and remaining blockers.
 
-- Project/repository and Slack workspace/channel:
-- Owner and verifiable authorization reference:
-- Project rules and stronger safeguards (including blind/data boundaries):
-- Charter version and full 40-character commit SHA:
-- Immutable charter URL: `https://github.com/joshxinjie/cross-model-review/blob/<full-sha>/docs/collaboration/CHARTER.md`
-- Exceptions, rationale and owner authorization (or none):
-- Allowed coordination; separately authorized implementation scope:
-- Explicit approval/merge gates and budget source/limits:
+Publish logical roles and verification status only.
+Keep opaque session/task IDs, connector configuration, scan checkpoints, coverage gaps and message dedup/backlog state privately.
+Each watcher applies the [charter's coverage rules](CHARTER.md), not a public checkpoint ledger.
 
-## People, sessions and delivery
-
-| Role | Named counterpart / model | Existing task or session ID | Actual read/write connectors | Verified delivery route and fallback |
-|---|---|---|---|---|
-| GPT project agent | | | | |
-| Claude project agent | | | | |
-| Author job (if separate) | | | | |
-| Watcher (if separate) | | | | |
-| Shared review coordinator | | | | |
-
-- Current single implementation task, owner, scope and completion condition:
-- Where ownership, durable decisions and backlog are recorded:
-- Who relays shared-review changes to this project:
-- Receipt/wake-up proof (successful send alone is insufficient):
-- Access limitations and fallback owner contact:
-
-## Watch schedule and coverage
-
-Specify schedules separately from research/author jobs. These are locally agreed settings, not inherited automatically from the charter.
-
-- Timezone, quiet schedule and operating days:
-- Active-watch trigger, interval, stop/revert condition:
-- Shared-review daily safety net and targeted handoff route:
-- Evidence required before reducing the safety net:
-- Last successful scan/checkpoint and covered channels/threads:
-- Resume from last success minus at least two hours; cover the entire gap:
-- Pagination/thread reconciliation, message-ID dedup and daily backlog sweep:
-- Coverage-gap log/resume point; never advance an incomplete scope:
-- Owner escalation conditions and duplicate-notification tracking:
-
-## Adoption receipt and verification
-
-| Step | Person/session | Evidence link | Date/time |
-|---|---|---|---|
-| GPT agrees to exact version and exceptions | | | |
-| Claude agrees to exact version and exceptions | | | |
-| Owner authorizes adoption/schedule changes | | | |
-| Schedule/config implemented by authorized actor | | | |
-| Delivery, access and schedule verified | | | |
-
-Effective date:
-Remaining blockers:
-Next review trigger:
-Previous adopted version and rollback arrangement:
-
-Publishing or merging shared documentation does not fill in this record, grant new permissions or change any project schedule.
+Publishing a filled record does not itself authorize implementation, change a schedule or override project rules.
