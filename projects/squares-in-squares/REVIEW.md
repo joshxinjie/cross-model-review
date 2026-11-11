@@ -6,8 +6,9 @@ Claude reviews. Use the shared 15-point budget gate before spending this project
 4-point allocation or owner-assigned contingency.
 
 Select a review after the geometry/metric contract is fixed, serialized placements have
-independent validity evidence, or a material search method changes. These are future
-milestones, not authorization to implement or run a solver in this PR.
+independent validity evidence, or a material search method changes. The owner separately
+authorized this offline baseline implementation; these milestones do not initiate a
+Claude review.
 
 Ask Claude to check unit-square geometry, rotations/radians, non-overlap and interval or
 precision issues, decimal round-trip validity, official metric version/score aggregation,

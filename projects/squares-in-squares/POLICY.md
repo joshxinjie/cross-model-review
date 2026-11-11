@@ -10,7 +10,8 @@ No automatic or scheduled Claude reviews, paid APIs, extra-usage billing or paid
 The prior audit read the official [overview](https://www.kaggle.com/competitions/squares-in-squares/overview),
 [data description](https://www.kaggle.com/competitions/squares-in-squares/data) and
 [rules](https://www.kaggle.com/competitions/squares-in-squares/rules) on 2026-11-11.
-No Kaggle call is made by this implementation. Rule acceptance, account eligibility,
+The baseline rechecked public rules and metric sources; see [audit](RULES_AUDIT.md).
+The runtime makes no Kaggle network calls. Rule acceptance, account eligibility,
 team membership and compute access remain unverified; `rules_accepted: false` means
 no verified acceptance is recorded here. The owner must recheck current rules and
 personally accept them before participation.
@@ -43,4 +44,4 @@ Use only the `squares-in-squares` namespaces from [project.yaml](project.yaml). 
 record puzzle sets, seeds, search budget, environment, feasibility checks, decimal output
 precision and per-puzzle/total aggregate scores. Preserve checkpoints privately with hashes.
 Validate serialized CSV again, rather than relying on a floating-point search tolerance
-as proof of valid geometry. These are future acceptance checks; no search has run here.
+as proof of valid geometry. The offline baseline enforces these checks; real search artifacts remain private.

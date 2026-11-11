@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "url": "https://www.kaggle.com/code/metric/squares-in-squares",
+  "kernel_id": 128385355,
+  "notebook_version": 20,
+  "retrieved_on": "2026-11-11",
+  "source_sha256": "abce6231e3eda28d040455e651bfe3578bce31bb69449c99f67f0b82a4a6c56b",
+  "extraction": "Join code cell sources with two newlines; append one newline; UTF-8.",
+  "competition_metric_version_id": 77151,
+  "active_metric_source_verified": false
+}
