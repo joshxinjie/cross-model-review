@@ -29,3 +29,13 @@ Outputs are atomic, re-export is recoverable, and `manual verify` checks archive
 There is no global exactly-once guarantee for unpublished imports across independent clones.
 See [manual review usage and threat model](manual-review.md). Version 1 packets from the
 unmerged PR must be recreated rather than reinterpreted under version 2.
+
+## Private manual transport authorization (Issue #16, Phase A)
+
+Manual export/import now permits the two repository/project pairs committed in
+`review_harness/manual-repositories.json`. The harness retains its separate checkout
+and its own origin/main ancestry gate. Cross-repository bases must match the target's
+fetched origin/main; same-repository behavior and version-2 archives remain compatible.
+See [migration and security assumptions](manual-review.md#phase-a-private-cross-repository-migration-issue-16)
+for pin updates, retained project paths and owner account prerequisites. No model
+workflow, baseline migration or repository creation is included.

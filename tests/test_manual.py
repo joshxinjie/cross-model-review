@@ -44,6 +44,10 @@ def work(tmp_path, monkeypatch):
     history.parent.mkdir()
     history.write_text("PRIVATE_PRIOR_FINDING_SENTINEL\n")
     (repo / f"projects/{OTHER}/source.py").write_text("OTHER_PROJECT_SENTINEL\n")
+    config_path = repo / "review_harness/manual-repositories.json"
+    config = json.loads(config_path.read_text())
+    config["harness_repository"] = "example/work"
+    config_path.write_text(json.dumps(config))
     base = commit(repo)
     git(repo, "update-ref", M.TRUSTED_REF, base)
     harness = tmp_path / "harness"
@@ -184,7 +188,7 @@ def test_stale_head_dirty_checkout_origin_and_harness(work, monkeypatch):
     git(repo, "remote", "set-url", "origin", "https://github.com/example/other.git")
     with pytest.raises(M.Rejected, match="identity"): import_response(work, packet_id, response(packet))
     git(repo, "remote", "set-url", "origin", "https://github.com/example/work.git")
-    monkeypatch.setattr(M, "harness_commit", lambda: head)
+    monkeypatch.setattr(M, "trusted_harness", lambda *args: head)
     with pytest.raises(M.Rejected, match="Harness"): import_response(work, packet_id, response(packet))
 
 
@@ -712,3 +716,178 @@ def test_uncommitted_records_cannot_fall_back_to_structural_verification(work, f
     record["result_id"] = M.review_result_id(packet_id, record["binding"], record["review"])
     archive.write_text(json.dumps(record))
     with pytest.raises(M.Rejected): M.verify_archives(work[0])
+
+
+@pytest.fixture(params=[PID, OTHER])
+def cross_work(work, request):
+    repo, base, head, tmp = work
+    pid = request.param
+    repository = "joshxinjie/kaggle-" + pid
+    git(repo, "remote", "set-url", "origin", "https://github.com/" + repository + ".git")
+    return work, pid, repository
+
+
+def cross_export(cross_work, **overrides):
+    work, pid, repository = cross_work
+    return export(work, pid=pid, repository=repository,
+                  files=[f"projects/{pid}/source.py"], **overrides)
+
+
+def test_authorized_cross_repository_roundtrip_and_archive(cross_work):
+    work, pid, repository = cross_work
+    packet_id, packet = cross_export(cross_work)
+    assert packet["binding"]["repository"] == repository
+    assert packet["binding"]["project_id"] == pid
+    assert packet["binding"]["harness_sha"] == work[1]
+    raw = work[3] / "result.json"
+    raw.write_text(json.dumps(response(packet)))
+    archive = M.import_result(work[0], pid, packet_id, raw)
+    assert archive.startswith(f"projects/{pid}/reviews/manual/")
+    assert M.verify_archives(work[0])["fully_validated"] == 1
+    commit(work[0])
+    assert M.verify_archives(work[0])["fully_validated"] == 1
+
+
+@pytest.mark.parametrize("attack", ["unknown", "other-project", "forged-target", "forged-harness", "stale-base"])
+def test_cross_repository_authorization_rejects_before_export(cross_work, attack):
+    work, pid, repository = cross_work
+    repo = work[0]
+    if attack == "unknown":
+        repository = "joshxinjie/unapproved"
+        git(repo, "remote", "set-url", "origin", "https://github.com/" + repository)
+    elif attack == "other-project":
+        pid = OTHER if pid == PID else PID
+    elif attack == "forged-target":
+        git(repo, "remote", "set-url", "origin", "https://github.com.attacker.invalid/" + repository)
+    elif attack == "forged-harness":
+        git(M.HARNESS_ROOT, "remote", "set-url", "origin", "https://github.com/" + repository)
+    else:
+        git(repo, "update-ref", M.TRUSTED_REF, work[2])
+    with pytest.raises(M.Rejected):
+        export(work, pid=pid, repository=repository, files=[f"projects/{pid}/source.py"])
+    assert not (work[3] / "packet.json").exists()
+
+
+@pytest.mark.parametrize("attack", ["head", "base", "origin", "harness", "harness-revision"])
+def test_cross_repository_stale_or_forged_import(cross_work, attack):
+    work, pid, repository = cross_work
+    packet_id, packet = cross_export(cross_work)
+    repo = work[0]
+    if attack == "head":
+        (repo / f"projects/{pid}/source.py").write_text("changed = True\n")
+        commit(repo)
+    elif attack == "base":
+        git(repo, "update-ref", M.TRUSTED_REF, work[2])
+    elif attack == "origin":
+        git(repo, "remote", "set-url", "origin", "https://github.com/joshxinjie/unapproved")
+    elif attack == "harness-revision":
+        (M.HARNESS_ROOT / "approved.txt").write_text("new approved harness revision\n")
+        git(M.HARNESS_ROOT, "update-ref", M.TRUSTED_REF, commit(M.HARNESS_ROOT))
+    else:
+        git(M.HARNESS_ROOT, "remote", "set-url", "origin", "https://github.com/joshxinjie/unapproved")
+    raw = work[3] / "result.json"
+    raw.write_text(json.dumps(response(packet)))
+    with pytest.raises(M.Rejected):
+        M.import_result(repo, pid, packet_id, raw)
+    assert not (repo / f".git/manual-review/used-{packet_id}").exists()
+
+
+def test_cross_repository_target_cannot_replace_trusted_configuration_or_code(cross_work):
+    work, pid, repository = cross_work
+    repo, base, _, tmp = work
+    (repo / "review_harness/manual-repositories.json").write_text('{}')
+    (repo / "review_harness/validate.py").write_text("raise RuntimeError('target code executed')\n")
+    (repo / "review_harness/manual.py").write_text("raise RuntimeError('target code executed')\n")
+    (repo / "review_harness/schemas/review.json").write_text('{}')
+    (repo / "projects/experiment.schema.json").write_text('{}')
+    (repo / "projects/POLICY.md").write_text("TARGET_POLICY_SENTINEL\n")
+    head = commit(repo)
+    packet_id, packet = cross_export(((repo, base, head, tmp), pid, repository))
+    assert "TARGET_POLICY_SENTINEL" not in json.dumps(packet)
+    raw = tmp / "result.json"
+    raw.write_text(json.dumps(response(packet)))
+    M.import_result(repo, pid, packet_id, raw)
+
+
+def test_cross_repository_evidence_cannot_cross_project(work):
+    git(work[0], "remote", "set-url", "origin", "https://github.com/joshxinjie/kaggle-name-that-llm")
+    work, path = completed_experiment(work, lambda m: m["inputs"][0].update(logical_id=OTHER + "/input"))
+    with pytest.raises(M.Rejected, match="Cross-project"):
+        export(work, repository="joshxinjie/kaggle-name-that-llm", experiments=[path])
+
+
+def test_target_configuration_cannot_authorize_itself(work):
+    repo, base, _, tmp = work
+    repository = "joshxinjie/unapproved"
+    (repo / "review_harness/manual-repositories.json").write_text(json.dumps({
+        "harness_repository": "example/work", "targets": {repository: PID}}))
+    head = commit(repo)
+    git(repo, "remote", "set-url", "origin", "https://github.com/" + repository)
+    with pytest.raises(M.Rejected, match="Unauthorized"):
+        export((repo, base, head, tmp), repository=repository)
+
+
+def test_cross_repository_independent_history_and_cli(work):
+    repo = work[3] / "independent"
+    repo.mkdir()
+    git(repo, "init", "-q", "-b", "main")
+    git(repo, "config", "user.name", "test")
+    git(repo, "config", "user.email", "test@example.invalid")
+    git(repo, "remote", "add", "origin", "git@github.com:joshxinjie/kaggle-name-that-llm.git")
+    (repo / PATH).parent.mkdir(parents=True)
+    (repo / PATH).write_text("independent = 1\n")
+    base = commit(repo)
+    git(repo, "update-ref", M.TRUSTED_REF, base)
+    (repo / PATH).write_text("independent = 2\n")
+    head = commit(repo)
+    packet_id, packet = export((repo, base, head, work[3]), repository="joshxinjie/kaggle-name-that-llm")
+    assert packet["binding"]["harness_sha"] == work[1] != base
+    raw = work[3] / "result.json"
+    raw.write_text(json.dumps(response(packet)))
+    result = subprocess.run([os.sys.executable, "-m", "review_harness.manual", "import",
+        "--repo", str(repo), "--project", PID, "--packet-id", packet_id,
+        "--result", str(raw), "--confirm-sanitized"], cwd=work[3],
+        env={"PATH": os.environ["PATH"], "PYTHONPATH": str(M.HARNESS_ROOT)},
+        capture_output=True, text=True)
+    assert result.returncode == 0, result.stderr
+    assert M.verify_archives(repo)["fully_validated"] == 1
+
+
+def test_structural_archive_cannot_bypass_project_authorization(cross_work):
+    work, pid, repository = cross_work
+    packet_id, packet = cross_export(cross_work)
+    raw = work[3] / "result.json"
+    raw.write_text(json.dumps(response(packet)))
+    archive = work[0] / M.import_result(work[0], pid, packet_id, raw)
+    record = json.loads(archive.read_text())
+    wrong_pid = OTHER if pid == PID else PID
+    record["binding"]["project_id"] = wrong_pid
+    record["binding"]["head_sha"] = "f" * 40
+    record["result_id"] = M.review_result_id(packet_id, record["binding"], record["review"])
+    archive.unlink()
+    wrong_path = work[0] / f"projects/{wrong_pid}/reviews/manual/{packet_id}.json"
+    wrong_path.parent.mkdir(parents=True, exist_ok=True)
+    wrong_path.write_text(json.dumps(record))
+    commit(work[0])
+    with pytest.raises(M.Rejected, match="authorization"):
+        M.verify_archives(work[0])
+
+
+def test_production_manual_repository_scope_is_explicit():
+    assert json.loads((SOURCE / "review_harness/manual-repositories.json").read_text()) == {
+        "harness_repository": "joshxinjie/cross-model-review",
+        "targets": {"joshxinjie/kaggle-name-that-llm": PID,
+                    "joshxinjie/kaggle-squares-in-squares": OTHER}}
+
+
+def test_uncommitted_or_unapproved_harness_authorization_is_rejected(work):
+    config_path = M.HARNESS_ROOT / "review_harness/manual-repositories.json"
+    config = json.loads(config_path.read_text())
+    config["targets"]["joshxinjie/unapproved"] = PID
+    config_path.write_text(json.dumps(config))
+    git(work[0], "remote", "set-url", "origin", "https://github.com/joshxinjie/unapproved")
+    with pytest.raises(M.Rejected):
+        export(work, repository="joshxinjie/unapproved")
+    commit(M.HARNESS_ROOT)
+    with pytest.raises(M.Rejected, match="ancestor"):
+        export(work, repository="joshxinjie/unapproved")

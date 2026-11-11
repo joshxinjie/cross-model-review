@@ -1,0 +1,7 @@
+{
+  "harness_repository": "joshxinjie/cross-model-review",
+  "targets": {
+    "joshxinjie/kaggle-name-that-llm": "name-that-llm",
+    "joshxinjie/kaggle-squares-in-squares": "squares-in-squares"
+  }
+}
