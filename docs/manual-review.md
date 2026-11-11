@@ -16,7 +16,9 @@ that allowance. The owner must apply the budget/access gate before starting Clau
 
 Use **two separate checkouts**. Launch Python from an owner-approved harness checkout,
 not from the PR checkout. Its clean harness commit must already be an ancestor of its
-fetched `origin/main`, and its origin must match the target repository identity. Policies,
+fetched `origin/main`, and its origin must match the harness identity in its committed
+`review_harness/manual-repositories.json`. The target must be that same repository or an
+explicitly authorized repository/project pair in that configuration. Policies,
 schemas and validator code come from this trusted harness, never the PR head. A commit
 being present in Git does not make it trusted. There is no bypass flag for unmerged code;
 bootstrap a new transport version through human review and merge before production use.
@@ -275,3 +277,67 @@ using those automatic model paths for the manual projects.
 The CLI targets Linux cloud shells. Parent symlinks are deliberately refused; on systems
 where `/tmp` is a symlink (such as macOS), use its canonical real path. This does not
 weaken the symlink check or introduce support for local-only workflows.
+
+## Phase A: private cross-repository migration (Issue #16)
+
+The trusted harness configuration authorizes exactly these additional targets:
+
+| Target repository | Required project ID |
+| --- | --- |
+| `joshxinjie/kaggle-name-that-llm` | `name-that-llm` |
+| `joshxinjie/kaggle-squares-in-squares` | `squares-in-squares` |
+
+The harness origin remains `joshxinjie/cross-model-review`. Authorization is read from
+its exact committed harness SHA, never a target file, CLI override, environment variable
+or target branch. Changes require human review and merge into the harness's own main.
+A target origin matching the supplied `--repository` is necessary but does not grant
+permission. The harness's ancestry is checked against its own fetched `origin/main`;
+target history need not contain any harness commit. Cross-repository export and import
+also require the base SHA to equal the target's locally fetched `origin/main`. Moving
+that ref after export requires a new packet. Head and harness revision changes also
+require re-export. Archive verification accepts historical bases rather than demanding
+that they equal today's main.
+
+After this PR is reviewed and merged, fetch the harness main and pin a full approved
+commit containing this configuration. Keep its checkout separate from the private target.
+Use the export example above with `--repository joshxinjie/kaggle-name-that-llm` (or the
+squares target and matching project), the target's exact fetched main SHA as `--base`,
+and its exact reviewed head SHA as `--head`. Launch Python from the trusted harness
+checkout or an external directory with its absolute `PYTHONPATH`; never launch from the
+untrusted target, whose current directory could shadow the installed package. Do not run
+target setup scripts or import its Python modules. Policies and both schemas are read as
+Git blobs from the pinned harness, and validators are imported only from the trusted
+installation. Target policy/schema/configuration files cannot replace those inputs.
+
+Phase A keeps `projects/<project-id>/...` selection, evidence config paths and archive
+paths. Standalone root layouts are not translated automatically; Phase B must arrange
+compatible paths or separately review explicit layout support. No baseline code, source
+PR or destination repository is changed by Phase A.
+
+Transport/schema version 2 and binding fields remain unchanged: project, target identity,
+harness SHA, base/head SHAs, schemas and evidence hashes remain bound by the packet ID
+and exact result binding. Same-repository export/import retains its existing ancestor-base
+behavior and both project IDs. Existing version-2 archives remain verifiable, including
+those pinned to the pre-configuration harness; current trusted authorization applies.
+An outstanding packet requires its original harness checkout for import; upgrading that
+checkout requires re-export. Existing consumers pinned to old harness commits do not
+gain cross-repository support until they update their pin. Automated workflows are unchanged.
+
+Repository names and Git origins are local identity checks, not cryptographic proof of
+GitHub provenance, visibility or live freshness. The owner must obtain clones and refs
+from authenticated GitHub access and verify remote identities before use. Forged URL
+hosts, mismatched origins, unlisted repository/project pairs and stale local bindings
+fail closed; a hostile actor who can rewrite trusted configuration, local Git metadata
+or fetched refs remains outside the existing threat model. No offline tool can detect
+an owner-controlled origin URL relabeled to a valid authorized name or an unfetched
+remote update. Fetch and verify both repositories before export/import. Do not copy
+receipts between unrelated targets; private receipts remain target-local and archives
+must bind that target and its authorized project, including structural-only history.
+
+Account-level prerequisites remain owner work: create the two repositories with private
+visibility, grant the intended GitHub account/app access to each, and provide authenticated
+fetch/push access when migration begins. This configuration neither creates repositories
+nor grants GitHub permissions, checks competition sharing rules, accepts Kaggle rules,
+starts Claude, spends allowance, or enables billing. The existing owner budget/access
+and publication gates still apply. No new secrets or paid API credentials are required
+for this offline transport.

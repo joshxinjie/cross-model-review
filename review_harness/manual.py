@@ -102,11 +102,35 @@ def harness_commit():
     return sha
 
 
-def trusted_harness(repo):
+def authorization(hsha, repository, pid=None):
+    """Read authorization only from the pinned, trusted harness commit."""
+    config = strict_json(blob(HARNESS_ROOT, hsha, "review_harness/manual-repositories.json"))
+    require(isinstance(config, dict) and set(config) == {"harness_repository", "targets"} and
+            isinstance(config["harness_repository"], str) and
+            REPOSITORY.fullmatch(config["harness_repository"]) and
+            isinstance(config["targets"], dict), "Invalid trusted repository configuration")
+    require(origin_identity(HARNESS_ROOT) == config["harness_repository"],
+            "Harness repository identity mismatch")
+    for target, project in config["targets"].items():
+        require(REPOSITORY.fullmatch(target) and target == target.lower() and project in PROJECTS,
+                "Invalid trusted repository configuration")
+    if repository != config["harness_repository"]:
+        require(repository in config["targets"], "Unauthorized target repository")
+        if pid is not None:
+            require(config["targets"][repository] == pid, "Repository/project authorization mismatch")
+        return True
+    return False
+
+
+def trusted_harness(repo, pid=None, base=None):
     require(HARNESS_ROOT.resolve() != repo.resolve(),
             "Use a separate trusted harness checkout, never the checkout under review")
-    require(origin_identity(HARNESS_ROOT) == origin_identity(repo), "Harness repository identity mismatch")
-    return harness_commit()
+    hsha = harness_commit()
+    cross_repo = authorization(hsha, origin_identity(repo), pid)
+    if cross_repo and base is not None:
+        require(git(repo, "rev-parse", TRUSTED_REF).decode().strip() == base,
+                "Stale base: cross-repository base differs from fetched origin/main")
+    return hsha
 
 
 def unsafe_format(text):
@@ -173,7 +197,7 @@ def packet_text(text):
 def origin_identity(repo):
     origin = git(repo, "config", "--get", "remote.origin.url").decode().strip()
     match = re.fullmatch(r"(?:https://github\.com/|git@github\.com:)([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+?)(?:\.git)?/?", origin)
-    require(match is not None, "Origin must be an uncredentialed public GitHub repository identity")
+    require(match is not None, "Origin must be an uncredentialed GitHub repository identity")
     return match[1].lower()
 
 
@@ -409,7 +433,7 @@ def validate_archive(repo, path, record):
                 isinstance(item["sha256"], str) and ID.fullmatch(item["sha256"]), "Invalid archive experiment binding")
         experiments.append(item["experiment_id"])
     require(len(set(experiments)) == len(experiments), "Duplicate archive experiment")
-    trusted_harness(repo)
+    trusted_harness(repo, binding["project_id"])
     git(HARNESS_ROOT, "merge-base", "--is-ancestor", binding["harness_sha"], TRUSTED_REF)
     schema = strict_json(blob(HARNESS_ROOT, binding["harness_sha"], "review_harness/schemas/review.json"))
     require(digest(encoded(schema)) == binding["review_schema_sha256"], "Archive schema hash mismatch")
@@ -433,6 +457,7 @@ def validate_archive(repo, path, record):
 
 def committed_archives(repo):
     records, packets, results = {}, set(), set()
+    hsha = None
     # origin/main must exist and must be refreshed by the owner. No implicit network call.
     for ref in (TRUSTED_REF, "HEAD"):
         for path in archive_paths(repo, ref):
@@ -444,6 +469,9 @@ def committed_archives(repo):
             # Replay identity must depend on the persisted record, not those Git objects.
             packet_id, result_id = archive_fingerprint(path, record)
             require(record["binding"]["repository"] == origin_identity(repo), "Invalid archive identity")
+            if hsha is None:
+                hsha = trusted_harness(repo)
+            authorization(hsha, record["binding"]["repository"], record["binding"]["project_id"])
             require(packet_id not in packets and result_id not in results, "Duplicate committed archive ID")
             packets.add(packet_id)
             results.add(result_id)
@@ -504,7 +532,7 @@ def export_packet(repo, pid, repository, base, head, files, experiments, out,
     require(0 < len(files) <= MAX_FILES and len(files) == len(set(files)), "Select 1-16 unique files")
     require(len(experiments) <= MAX_FILES and len(experiments) == len(set(experiments)), "Duplicate/excess experiments")
     identity(repo, repository, base, head)
-    hsha = trusted_harness(repo)
+    hsha = trusted_harness(repo, pid, base)
     try:
         author_family = model_family({"model": author_model})
         reviewer_family = model_family({"model": reviewer_model})
@@ -578,7 +606,7 @@ def import_result(repo, pid, packet_id, result_path):
                 result["packet_id"] == packet_id and encoded(result["binding"]) == encoded(binding),
                 "Result binding mismatch")
         identity(repo, binding["repository"], binding["base_sha"], binding["head_sha"])
-        require(trusted_harness(repo) == binding["harness_sha"], "Harness revision changed; export a new packet")
+        require(trusted_harness(repo, pid, binding["base_sha"]) == binding["harness_sha"], "Harness revision changed; export a new packet")
         require(binding["schema_version"] == TRANSPORT_VERSION, "Old transport version; export a new packet")
         reject_committed_duplicate(repo, packet_id)
         review = result["review"]
