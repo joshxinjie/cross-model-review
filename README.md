@@ -126,3 +126,8 @@ For GPT–Claude coordination beyond individual reviews, see the proposed
 [project adoption record](docs/collaboration/PROJECT_TEMPLATE.md) and
 [handoff template](docs/collaboration/HANDOFF_TEMPLATE.md).
 These documents do not change the harness, grant permissions or automatically adopt new project schedules.
+
+The [Kaggle project foundations](projects/README.md) define separate policy, configuration,
+experiment contracts and manual milestone review procedures for Name That LLM and Squares
+in Squares. They are declarative records only; existing consumers and review/response
+workflows are unchanged.

@@ -1,0 +1,38 @@
+# Declarative policy; not review/config.yaml and not loaded by the harness.
+schema_version: 1
+project_id: name-that-llm
+name: Name That LLM
+shared_policy: projects/policy.yaml
+paths:
+  root: projects/name-that-llm
+  configuration: projects/name-that-llm/project.yaml
+  experiment_records: projects/name-that-llm/experiments
+  review_history: projects/name-that-llm/reviews
+  private_staging: projects/name-that-llm/private
+artifact_namespace: name-that-llm
+adoption_record: docs/collaboration/projects/name-that-llm.md
+documents:
+  overview: projects/name-that-llm/README.md
+  policy: projects/name-that-llm/POLICY.md
+  review: projects/name-that-llm/REVIEW.md
+  experiments: projects/name-that-llm/EXPERIMENTS.md
+  example: projects/name-that-llm/experiment.example.yaml
+competition:
+  slug: name-that-llm
+  rules_url: https://www.kaggle.com/competitions/name-that-llm/rules
+  overview_url: https://www.kaggle.com/competitions/name-that-llm/overview/abstract
+  audit_verified_on: '2026-11-11'
+  rules_accepted: false
+  entry_deadline_utc: '2027-01-06T23:59:00Z'
+  merger_deadline_utc: '2027-01-06T23:59:00Z'
+  final_deadline_utc: '2027-01-13T23:59:00Z'
+  max_team_size: 5
+  max_submissions_per_day: 5
+  max_final_submissions: 2
+  submission:
+    mode: kaggle-notebook
+    filename: submission.parquet
+    columns: [id, model]
+    cpu_runtime_hours_max: 9
+    gpu_runtime_hours_max: 9
+    internet: false

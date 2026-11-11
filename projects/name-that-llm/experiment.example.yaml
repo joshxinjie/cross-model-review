@@ -1,0 +1,31 @@
+# Synthetic specification example only. Zero hashes are placeholders, not evidence.
+schema_version: 1
+project_id: name-that-llm
+experiment_id: name-that-llm/synthetic-example
+status: planned
+source_sha: '0000000000000000000000000000000000000000'
+config_path: projects/name-that-llm/project.yaml
+config_sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+seed: 0
+inputs:
+- logical_id: name-that-llm/synthetic-input
+  version: synthetic-v1
+  sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+  license: synthetic-example-only
+  provenance: Invented metadata; no competition data or model attached.
+environment:
+  platform: kaggle
+  image: not-run
+  dependency_lock_sha256: '0000000000000000000000000000000000000000000000000000000000000000'
+notebook:
+  logical_id: name-that-llm/synthetic-notebook
+  version: not-run
+metric_version: not-run
+runtime_seconds: 0
+checks:
+- name: example-only
+  method: none
+  outcome: unknown
+  detail: Synthetic plan; no experiment, model, notebook or submission ran.
+results: []
+artifacts: []
