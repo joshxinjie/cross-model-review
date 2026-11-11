@@ -21,7 +21,7 @@ authors:
     model: claude-opus-5-5
     secret: CLAUDE_CODE_OAUTH_TOKEN
     instructions: review/RESPOND.md
-    default_reviewer: gpt      # another model family; `/review fable` for a Claude reviewer
+    default_reviewer: gpt      # another model family; same-family Claude reviewers are refused
   codex:                       # work built with OpenAI Codex (Codex cloud names its branches codex/...)
     branch_prefixes: [codex/]
     provider: codex
@@ -29,10 +29,10 @@ authors:
     reasoning_effort: high
     secret: CODEX_AUTH_JSON
     instructions: review/RESPOND.md
-    default_reviewer: opus     # `/review fable` for the alternative
+    default_reviewer: opus     # `/review fable` for another Claude model
 default_author: claude
 
-default_reviewer: fable        # project reviews: no single author, and Fable is neither author's model
+default_reviewer: gpt          # project reviews: different family from default_author (Claude)
 
 reviewers:
   # Claude Code on a Claude subscription token (`claude setup-token`). Reads files, runs the tests, searches the web
@@ -42,7 +42,7 @@ reviewers:
     model: claude-fable-5-1
     secret: CLAUDE_CODE_OAUTH_TOKEN
     enabled: true
-  # Claude Opus: reviews work built by Codex (refused on Claude-built PRs, being Claude's author model).
+  # Claude Opus: reviews work built by Codex (all Claude-family reviewers are refused on Claude work).
   opus:
     provider: claude-code
     model: claude-opus-5-5

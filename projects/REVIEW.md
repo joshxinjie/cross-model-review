@@ -3,7 +3,8 @@
 Adapted from the existing [review template](../templates/REVIEW.md),
 [handoff template](../docs/collaboration/HANDOFF_TEMPLATE.md) and
 [decision log template](../templates/reviews/decisions.md). This is a manual procedure;
-it does not enable harness commands, schedules, review transport or model invocation.
+it does not enable harness commands, schedules or model invocation. The optional
+[manual transport](../docs/manual-review.md) implements bounded export and structured import only.
 
 1. Codex finishes the bounded implementation and available checks. The owner decides
    whether a milestone warrants independent review after applying the shared budget gate.
@@ -27,7 +28,8 @@ it does not enable harness commands, schedules, review transport or model invoca
    claim tests passed from inspection alone. No model gives formal GitHub approval.
 5. Keep a sanitized review record under `projects/<project-id>/reviews/`, with project ID,
    repository, base/head SHA, reviewer/model identity, review mode and experiment IDs.
-   Reuse the template's date/scope/reviewer naming inside this namespace. Private session
+   Handwritten records may use the template's date/scope/reviewer naming inside this namespace.
+   The CLI instead reserves `manual/<packet-id>.json` for validated structured imports. Private session
    IDs, account usage, operational routing and raw transcripts stay outside the public repo.
    No imported review is represented as a harness-produced record in `reviewer/archive`.
 6. Codex proposes `accept`, `modify`, `reject` or `defer` for each finding, with verification

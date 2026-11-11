@@ -6,6 +6,8 @@ from pathlib import Path
 
 import yaml
 
+from review_harness.config import model_family
+
 REPO = Path(__file__).resolve().parents[1]
 ROOT = REPO / "tests" / "fixture"
 SCHEMA = json.loads((REPO / "review_harness" / "schemas" / "review.json").read_text())
@@ -29,10 +31,10 @@ def test_default_reviewers_enabled_pinned_and_not_the_author():
     assert CONFIG["default_author"] in authors
     project_default = reviewers[CONFIG["default_reviewer"]]
     assert project_default["enabled"]
-    assert all(project_default["model"] != a["model"] for a in authors.values()), "project default is an author"
+    assert model_family(project_default) != model_family(authors[CONFIG["default_author"]])
     for name, a in authors.items():
         own = reviewers[a["default_reviewer"]]
-        assert own["enabled"] and own["model"] != a["model"], f"author {name}'s default reviewer is itself"
+        assert own["enabled"] and model_family(own) != model_family(a), f"author {name}'s default reviewer is itself"
         assert re.fullmatch(r"[A-Z][A-Z0-9_]*", a["secret"]), "secret must be a name, not a key"
     for name, r in reviewers.items():
         if r["enabled"]:
@@ -82,7 +84,7 @@ def test_template_config_defaults_are_consistent():
     reviewers = cfg["reviewers"]
     for name, a in cfg["authors"].items():
         r = reviewers[a["default_reviewer"]]
-        assert r["enabled"] and r["model"] != a["model"], name
-    assert all(reviewers[cfg["default_reviewer"]]["model"] != a["model"] for a in cfg["authors"].values())
+        assert r["enabled"] and model_family(r) != model_family(a), name
+    assert model_family(reviewers[cfg["default_reviewer"]]) != model_family(cfg["authors"][cfg["default_author"]])
     wf = yaml.safe_load((REPO / ".github" / "workflows" / "review.yml").read_text())
     assert wf[True]["workflow_call"]["inputs"]["label"]["default"] == cfg["triggers"]["pr_label"]

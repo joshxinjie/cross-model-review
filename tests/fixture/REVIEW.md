@@ -1,6 +1,6 @@
 # Cross-model review procedure
 
-A reviewer model from a **different model or provider** than the one that built the work reviews this repo and
+A reviewer model from a **different model family** than the one that built the work reviews this repo and
 suggests improvements. It runs on pull requests (on request) and, if configured, on a schedule. The reviewer only
 suggests; the owner decides, and every change to `main` still arrives as a pull request the owner approves.
 
