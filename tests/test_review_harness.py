@@ -246,13 +246,13 @@ def test_post_falls_back_when_inline_positions_rejected():
 # ---- config and provider --------------------------------------------------------------------------------------------
 
 def test_get_reviewer_guards():
-    assert get_reviewer(CFG)["model"] == "claude-fable-5-1"
+    assert get_reviewer(CFG)["model"] == "gpt-6.1-sol"
     with pytest.raises(ValueError, match="disabled"):
         get_reviewer(CFG, "gemini")
     bad = copy.deepcopy(CFG)
     bad["reviewers"]["fable"]["model"] = bad["authors"]["claude"]["model"]
     with pytest.raises(ValueError, match="built this work"):
-        get_reviewer(bad)
+        get_reviewer(bad, "fable")
 
 
 def test_anthropic_adapter_parses_and_retries(monkeypatch):
@@ -386,11 +386,11 @@ def test_failures_write_a_short_redacted_reason(tmp_path, monkeypatch):
     R.report_error(str(err), "RuntimeError: Anthropic API 401 for key sk-ant-abcdefghijklmnop " + "x" * 2000)
     text = err.read_text()
     assert "401" in text and "sk-ant" not in text and "[redacted]" in text and len(text) <= 801
-    monkeypatch.delenv("CLAUDE_CODE_OAUTH_TOKEN", raising=False)
+    monkeypatch.delenv("CODEX_AUTH_JSON", raising=False)
     err2 = tmp_path / "err2.txt"
     with pytest.raises(RuntimeError):
         R.main(["--scope", "project", "--areas", "README.md", "--error-file", str(err2)])
-    assert "CLAUDE_CODE_OAUTH_TOKEN is not set" in err2.read_text()
+    assert "CODEX_AUTH_JSON is not set" in err2.read_text()
 
 
 # ---- Claude Code (subscription) reviewer ----------------------------------------------------------------------------
@@ -460,8 +460,8 @@ def test_claude_code_errors_are_reported(monkeypatch):
 
 
 def test_default_reviewer_uses_the_subscription_and_gate_reports_provider():
-    r = get_reviewer(CFG)                                  # project reviews: Fable on the Claude subscription
-    assert r["provider"] == "claude-code" and r["secret"] == "CLAUDE_CODE_OAUTH_TOKEN"
+    r = get_reviewer(CFG)                                  # project reviews: GPT, different family from default_author
+    assert r["provider"] == "codex" and r["secret"] == "CODEX_AUTH_JSON"
     out = G.pr_target(CFG, pr_json(), None, [], TODAY)     # a Claude-built PR: GPT through Codex, queued
     assert out["provider"] == "codex" and out["codex"] == "true"
     out = G.pr_target(CFG, pr_json(ref="codex/add-x"), None, [], TODAY)   # a Codex-built PR: Opus
@@ -1114,7 +1114,7 @@ def test_gpt_runs_share_one_concurrency_group_and_refreshes_are_masked():     # 
 
 def test_gate_reports_when_a_run_uses_the_codex_login():
     assert G.pr_target(CFG, pr_json(), "gpt", [], TODAY)["codex"] == "true"
-    assert G.pr_target(CFG, pr_json(), "fable", [], TODAY)["codex"] == "false"
+    assert G.pr_target(CFG, pr_json(ref="codex/add-x"), "fable", [], TODAY)["codex"] == "false"
     assert G.pr_target(CFG, pr_json(ref="codex/x"), None, [], TODAY)["codex"] == "false"     # Opus reviews it
 
 

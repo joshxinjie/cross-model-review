@@ -6,8 +6,8 @@
 | `squares-in-squares` | [Squares in Squares](squares-in-squares/README.md) | [project.yaml](squares-in-squares/project.yaml) |
 
 These are independent projects in the existing public repository. Their YAML files are
-declarative policy records, **not harness runtime configuration**. Nothing in
-`review_harness/`, the consumer templates or the reusable workflows loads them.
+declarative policy records, **not harness runtime configuration**. The automatic review/response workflows do not load them. The separate
+[manual packet CLI](../docs/manual-review.md) applies fixed project isolation and pinned policy snapshots.
 Do not copy them into `review/config.yaml` or enable `/review` for these projects.
 
 Read the shared [operating policy](POLICY.md), [policy configuration](policy.yaml),
@@ -42,5 +42,5 @@ and static checks, not a security sandbox or implemented experiment router.
 
 Run `python -m pytest -q`. The project contract tests validate configuration, budget and
 isolation invariants, plus synthetic manifests and rejection cases using the existing
-schema validator. Tests make no model or Kaggle calls. There are no baselines, runners,
-review packet transports, dot integrations or model-triggering workflows in this layer.
+schema validator. Tests make no model or Kaggle calls. There are no baselines, runners, dot integrations or model-triggering workflows in this layer.
+Manual transport is opt-in; see its threat model and tests in `tests/test_manual.py`.

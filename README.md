@@ -18,11 +18,11 @@ Each PR's author is found from its branch name. The defaults (all set in your `r
 
 | PR built by | Branch | `/review` runs | Also | `/respond` answered by |
 |---|---|---|---|---|
-| Claude | anything else | GPT (Codex) | `/review fable` | Claude Opus |
+| Claude | anything else | GPT (Codex) | another non-Claude family | Claude Opus |
 | Codex | `codex/…` | Claude Opus | `/review fable` | Codex |
-| Project reviews | — | Fable | any other reviewer by name | Claude Opus |
+| Project reviews | — | GPT (Codex) | different family from `default_author` | Claude Opus |
 
-A reviewer that is the same model as the PR's author is refused.
+A reviewer from the same model family as the PR's author is refused, even when model IDs or provider aliases differ. Unknown or conflicting families fail closed. Project reviews use `default_author` for this check; they are not independent of every contributor.
 
 ## Add it to a repo
 
@@ -131,3 +131,9 @@ The [Kaggle project foundations](projects/README.md) define separate policy, con
 experiment contracts and manual milestone review procedures for Name That LLM and Squares
 in Squares. They are declarative records only; existing consumers and review/response
 workflows are unchanged.
+
+## Manual Kaggle reviews
+
+The offline [manual packet CLI](docs/manual-review.md) exports explicitly selected, bounded
+project snapshots and validates manually supplied findings. It never invokes a model,
+posts to GitHub or participates in `/review`, `/respond` or `reviewer/archive`.

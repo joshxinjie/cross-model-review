@@ -5,6 +5,7 @@ harness code itself lives elsewhere (this repository), so a pull request cannot 
 """
 
 import os
+import re
 from pathlib import Path
 
 import yaml
@@ -115,10 +116,33 @@ def fix_branch_prefix(author: dict) -> str:
     return FIX_PREFIX + (author.get("branch_prefixes") or [""])[0]
 
 
+def model_family(entry: dict) -> str:
+    """Infer a lab family from known providers/models; reject conflicting or unknown identities.
+
+    Provider aliases and model variants must not bypass independence. No configurable
+    family override: an arbitrary label would let a same-family reviewer opt itself in.
+    """
+    provider = str(entry.get("provider", "")).lower()
+    model = str(entry.get("model", "")).lower()
+    by_provider = {"codex": "openai", "openai": "openai", "anthropic": "anthropic",
+                   "claude-code": "anthropic", "google": "google", "gemini": "google"}.get(provider)
+    by_model = next((family for pattern, family in (
+        (r"^(?:claude[-.]|anthropic/)", "anthropic"),
+        (r"^(?:gpt[-.]|o[134](?:-|$)|openai/)", "openai"),
+        (r"^(?:gemini[-.]|google/)", "google"),
+    ) if re.search(pattern, model)), None)
+    if by_provider and by_model and by_provider != by_model:
+        raise ValueError("provider and model identify conflicting model families")
+    family = by_model or by_provider
+    if not family:
+        raise ValueError("cannot determine model family; use a recognized provider/model identity")
+    return family
+
+
 def get_reviewer(cfg: dict, name: str | None = None, author: dict | None = None) -> dict:
     """Return the named reviewer with its name added. Without a name: the author's default reviewer, or the
     top-level default_reviewer when there is no author. Refuses disabled or unpinned reviewers, and any reviewer
-    that is the same model as the author (default_author when none is given)."""
+    that is the same model family as the author (default_author when none is given)."""
     name = name or (author or {}).get("default_reviewer") or cfg["default_reviewer"]
     author = author or get_author(cfg)
     reviewers = cfg["reviewers"]
@@ -129,9 +153,9 @@ def get_reviewer(cfg: dict, name: str | None = None, author: dict | None = None)
         raise ValueError(f"reviewer {name!r} is disabled in review/config.yaml")
     if not r.get("model"):
         raise ValueError(f"reviewer {name!r} has no pinned model")
-    if r["model"] == author["model"]:
-        raise ValueError(f"reviewer {name!r} is the model that built this work ({author['name']}: "
-                         f"{author['model']}); reviews must come from a different model")
+    if model_family(r) == model_family(author):
+        raise ValueError(f"reviewer {name!r} is in the model family that built this work ({author.get('name', 'author')}); "
+                         "reviews must come from a different model family")
     return r
 
 
