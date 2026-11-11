@@ -1,0 +1,39 @@
+# Declarative policy; not review/config.yaml and not loaded by the harness.
+schema_version: 1
+project_id: squares-in-squares
+name: Squares in Squares
+shared_policy: projects/policy.yaml
+paths:
+  root: projects/squares-in-squares
+  configuration: projects/squares-in-squares/project.yaml
+  experiment_records: projects/squares-in-squares/experiments
+  review_history: projects/squares-in-squares/reviews
+  private_staging: projects/squares-in-squares/private
+artifact_namespace: squares-in-squares
+adoption_record: docs/collaboration/projects/squares-in-squares.md
+documents:
+  overview: projects/squares-in-squares/README.md
+  policy: projects/squares-in-squares/POLICY.md
+  review: projects/squares-in-squares/REVIEW.md
+  experiments: projects/squares-in-squares/EXPERIMENTS.md
+  example: projects/squares-in-squares/experiment.example.yaml
+competition:
+  slug: squares-in-squares
+  rules_url: https://www.kaggle.com/competitions/squares-in-squares/rules
+  overview_url: https://www.kaggle.com/competitions/squares-in-squares/overview
+  audit_verified_on: '2026-11-11'
+  rules_accepted: false
+  entry_deadline_utc: '2027-07-11T23:59:00Z'
+  merger_deadline_utc: '2027-07-11T23:59:00Z'
+  final_deadline_utc: '2027-07-18T23:59:00Z'
+  milestone_deadlines_utc: ['2027-01-17T23:59:00Z', '2027-04-18T23:59:00Z']
+  max_team_size: 5
+  max_submissions_per_day: 10
+  max_final_submissions: 1
+  submission:
+    mode: csv
+    filename: submission.csv
+    columns: [id, n, square_id, x, y, angle]
+    angle_unit: radians
+    partial_puzzles: true
+    notebook_execution_requirement: none-found-in-audit

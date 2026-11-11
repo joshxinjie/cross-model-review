@@ -1,0 +1,42 @@
+# Declarative governance only; not loaded by review_harness.
+schema_version: 1
+project_ids: [name-that-llm, squares-in-squares]
+execution:
+  cloud_only: true
+  preferred_compute: kaggle-free
+  engineering: codex-cloud
+  reviewer: claude-max
+  reviewer_initiation: owner-manual-milestone
+  max_active_implementation_tasks_per_project: 1
+  owner_merges: true
+billing:
+  subscription_only: true
+  paid_openai_api: false
+  paid_anthropic_api: false
+  extra_usage: false
+  automatic_paid_fallback: false
+reviews:
+  automatic: false
+  scheduled: false
+  unattended_claude: false
+  automatic_retry: false
+  require_project_and_base_head_sha: true
+  cross_model_family: true
+claude_weekly_budget:
+  unit: percentage_points_of_total_weekly_allowance
+  existing_usage_reserved: 70
+  combined_project_cap: 15
+  project_caps:
+    name-that-llm: 8
+    squares-in-squares: 4
+  shared_contingency_cap: 3
+  unallocated_reserve: 15
+  accounting: owner-recorded-usage-before-and-after
+  enforcement: manual-no-provider-reservation
+  unknown_usage_action: defer-review
+privacy:
+  public_repository: true
+  commit_competition_data: false
+  commit_credentials: false
+  commit_private_artifacts: false
+  cross_project_access_by_default: false

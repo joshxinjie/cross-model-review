@@ -1,0 +1,241 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/joshxinjie/cross-model-review/projects/experiment.schema.json",
+  "title": "Kaggle experiment manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "project_id",
+    "experiment_id",
+    "status",
+    "source_sha",
+    "config_path",
+    "config_sha256",
+    "seed",
+    "inputs",
+    "environment",
+    "notebook",
+    "metric_version",
+    "runtime_seconds",
+    "checks",
+    "results",
+    "artifacts"
+  ],
+  "properties": {
+    "schema_version": {
+      "type": "integer",
+      "const": 1
+    },
+    "project_id": {
+      "type": "string",
+      "enum": [
+        "name-that-llm",
+        "squares-in-squares"
+      ]
+    },
+    "experiment_id": {
+      "type": "string",
+      "pattern": "^(?:name-that-llm|squares-in-squares)/[a-z0-9][a-z0-9._-]*$"
+    },
+    "status": {
+      "type": "string",
+      "enum": [
+        "planned",
+        "completed",
+        "failed",
+        "blocked"
+      ]
+    },
+    "source_sha": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
+    },
+    "config_path": {
+      "type": "string",
+      "pattern": "^projects/(?:name-that-llm|squares-in-squares)/[a-zA-Z0-9_./-]+$"
+    },
+    "config_sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "seed": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "inputs": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "logical_id",
+          "version",
+          "sha256",
+          "license",
+          "provenance"
+        ],
+        "properties": {
+          "logical_id": {
+            "type": "string",
+            "pattern": "^(?:name-that-llm|squares-in-squares)/[a-z0-9][a-z0-9._-]*$"
+          },
+          "version": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "license": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "provenance": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "environment": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "platform",
+        "image",
+        "dependency_lock_sha256"
+      ],
+      "properties": {
+        "platform": {
+          "type": "string",
+          "enum": [
+            "kaggle",
+            "codex-cloud"
+          ]
+        },
+        "image": {
+          "type": "string",
+          "pattern": "\\S"
+        },
+        "dependency_lock_sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "notebook": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "logical_id",
+        "version"
+      ],
+      "properties": {
+        "logical_id": {
+          "type": "string",
+          "pattern": "^(?:name-that-llm|squares-in-squares)/[a-z0-9][a-z0-9._-]*$"
+        },
+        "version": {
+          "type": "string",
+          "pattern": "\\S"
+        }
+      }
+    },
+    "metric_version": {
+      "type": "string",
+      "pattern": "\\S"
+    },
+    "runtime_seconds": {
+      "type": "number",
+      "minimum": 0
+    },
+    "checks": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "method",
+          "outcome",
+          "detail"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "method": {
+            "type": "string",
+            "enum": [
+              "ran",
+              "read",
+              "none"
+            ]
+          },
+          "outcome": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed",
+              "blocked",
+              "unknown"
+            ]
+          },
+          "detail": {
+            "type": "string",
+            "pattern": "\\S"
+          }
+        }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "value"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "pattern": "\\S"
+          },
+          "value": {
+            "type": "number"
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "logical_id",
+          "sha256",
+          "visibility"
+        ],
+        "properties": {
+          "logical_id": {
+            "type": "string",
+            "pattern": "^(?:name-that-llm|squares-in-squares)/[a-z0-9][a-z0-9._-]*/[a-z0-9][a-z0-9._-]*$"
+          },
+          "sha256": {
+            "type": "string",
+            "pattern": "^[0-9a-f]{64}$"
+          },
+          "visibility": {
+            "type": "string",
+            "const": "private-cloud"
+          }
+        }
+      }
+    }
+  }
+}

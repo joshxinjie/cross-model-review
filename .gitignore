@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# Private Kaggle staging only; retain real artifacts in access-controlled cloud storage.
+/projects/*/private/
