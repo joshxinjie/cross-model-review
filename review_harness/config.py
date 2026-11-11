@@ -128,7 +128,7 @@ def model_family(entry: dict) -> str:
                    "claude-code": "anthropic", "google": "google", "gemini": "google"}.get(provider)
     by_model = next((family for pattern, family in (
         (r"^(?:claude[-.]|anthropic/)", "anthropic"),
-        (r"^(?:gpt[-.]|o[134](?:-|$)|openai/)", "openai"),
+        (r"^(?:gpt[-.]|codex[-.]|chatgpt[-.]|o[1-9][0-9]*(?:-|$)|openai/)", "openai"),
         (r"^(?:gemini[-.]|google/)", "google"),
     ) if re.search(pattern, model)), None)
     if by_provider and by_model and by_provider != by_model:
@@ -155,7 +155,9 @@ def get_reviewer(cfg: dict, name: str | None = None, author: dict | None = None)
         raise ValueError(f"reviewer {name!r} has no pinned model")
     if model_family(r) == model_family(author):
         raise ValueError(f"reviewer {name!r} is in the model family that built this work ({author.get('name', 'author')}); "
-                         "reviews must come from a different model family")
+                         "reviews must come from a different model family. Change review/config.yaml default_reviewer "
+                         "for project reviews or authors.<author>.default_reviewer for PR reviews, and configure "
+                         "the selected subscription credential; no automatic fallback is available")
     return r
 
 

@@ -137,3 +137,10 @@ workflows are unchanged.
 The offline [manual packet CLI](docs/manual-review.md) exports explicitly selected, bounded
 project snapshots and validates manually supplied findings. It never invokes a model,
 posts to GitHub or participates in `/review`, `/respond` or `reviewer/archive`.
+
+Before updating an existing consumer's harness pin, read the
+[cross-family migration notes](docs/release-notes.md#cross-family-review-migration).
+Old `default_author: claude` / `default_reviewer: fable` configurations now skip project
+reviews. Change `review/config.yaml`'s `default_reviewer` (and per-author defaults where
+needed) and configure the selected subscription credential; GPT needs `CODEX_AUTH_JSON`.
+There is no automatic provider or billing fallback. `/respond` is unaffected.
