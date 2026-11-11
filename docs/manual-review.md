@@ -159,8 +159,12 @@ to different file selections or reviewer packets do not falsely collide.
 Durable rejection uses committed records in both the target's **fetched `origin/main`**
 and `HEAD`, not just the working tree. Export and import refuse packets already recorded
 there, even when the target is checked out at the older reviewed head where the archive
-does not exist. Archive filenames, project IDs, schemas and recomputed result IDs are
-validated; duplicate IDs and changed published records fail closed. Contract tests also
+does not exist. Historical replay lookup uses `archive_fingerprint`: record shape,
+filename/project/repository identity, commit-SHA syntax and recomputed result IDs. It
+does not read historical harness or reviewed-head Git objects, which can legitimately
+disappear after squash/rebase/GC or shallow cloning. Duplicate IDs, malformed identities
+and changed published records still fail closed. Newly imported records receive full
+`validate_archive` validation before publication. Contract tests also
 parse checked-in records and reject malformed, misnamed or duplicate IDs.
 
 This is **not global exactly-once consumption**. Independent clones with stale refs or
@@ -187,9 +191,20 @@ PYTHONPATH=/cloud/trusted-review-harness python -m review_harness.manual verify 
   --repo /cloud/competition-pr
 ```
 
-This checks both projects' working-tree records and committed snapshots, parses JSON,
-validates binding/schema, recomputes `result_id`, and rejects duplicates or modifications
-to published records. It makes no model/network calls and needs no private receipt.
+This checks both projects' working-tree records and committed snapshots and prints JSON:
+`records`, `fully_validated`, and a `structural_only` list. Each structural-only entry
+names the archive path and unavailable commit fields (`base_sha`, `head_sha`, or
+`harness_sha`). Committed historical records whose referenced commits are unavailable
+receive fingerprint/identity verification only, **not** schema, historical harness
+ancestry or finding-line verification. Existing history does not block unrelated reviews.
+
+Exit status is **0** when all records receive full validation, **3** when historical
+records receive structural-only verification, or **2** on invalid data/check failure.
+Unavailable commits never excuse malformed IDs, duplicate IDs, changed published records
+or an untrusted current harness. New/uncommitted records cannot fall back to structural
+verification: full validation is required. Historical records with available commits
+also retain full validation. The command makes no model/network calls and needs no
+private receipt; restore missing history and rerun to obtain full verification.
 Transport version 1 packets/records from the unmerged PR are not accepted as version 2;
 re-export after installing the reviewed version. There are no production records to migrate
 in this repository at this change.
@@ -200,6 +215,13 @@ archive name. Inspect state and run `verify`; do not automatically clear consump
 markers or invent a replacement answer. A complete archive may exist if a failure occurred
 after the atomic link; verification distinguishes this from an absent archive. Temporary
 files are not review records and must not be committed. Owner-led recovery is required.
+Atomic publication requires same-directory hard links and directory fsync support;
+unsupported filesystems fail rather than falling back to non-atomic writes. After an
+interruption, first stop concurrent writers and inspect the final archive and consumption
+markers. Remove only confirmed orphan `.manual-review-*` temporary files, then rerun
+`verify`; do not rename a temporary file into an accepted record or clear replay markers
+automatically. Unpublished imports across independent clones still cannot be globally
+deduplicated without shared durable state.
 
 ## Threat model and security review checklist
 

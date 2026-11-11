@@ -366,6 +366,14 @@ def archive_fingerprint(path, record):
             type(record["binding"].get("schema_version")) is int and
             record["binding"]["schema_version"] == TRANSPORT_VERSION,
             "Archive filename/project/packet ID mismatch")
+    binding = record["binding"]
+    require(set(binding) == {"schema_version", "review_schema_version", "review_schema_sha256", "project_id",
+                            "repository", "base_sha", "head_sha", "harness_sha", "reviewer_model", "reviewer_family",
+                            "review_mode", "files", "experiments"}, "Malformed archive binding")
+    require(isinstance(binding["repository"], str) and REPOSITORY.fullmatch(binding["repository"]) and
+            binding["repository"] == binding["repository"].lower() and
+            all(isinstance(binding[k], str) and SHA.fullmatch(binding[k])
+                for k in ("base_sha", "head_sha", "harness_sha")), "Invalid archive identity")
     require(record.get("result_id") == review_result_id(record["packet_id"], record["binding"], record.get("review")),
             "Archive result ID mismatch")
     return record["packet_id"], record["result_id"]
@@ -376,12 +384,7 @@ def validate_archive(repo, path, record):
     archive_fingerprint(path, record)
     parts = relpath(path).parts
     packet_id, binding, review = record["packet_id"], record["binding"], record["review"]
-    require(set(binding) == {"schema_version", "review_schema_version", "review_schema_sha256", "project_id",
-                            "repository", "base_sha", "head_sha", "harness_sha", "reviewer_model", "reviewer_family",
-                            "review_mode", "files", "experiments"}, "Malformed archive binding")
-    require(binding["repository"] == origin_identity(repo) and
-            all(isinstance(binding[k], str) and SHA.fullmatch(binding[k])
-                for k in ("base_sha", "head_sha", "harness_sha")), "Invalid archive identity")
+    require(binding["repository"] == origin_identity(repo), "Invalid archive identity")
     require(binding["review_mode"] == "fresh-history-free" and binding["reviewer_family"] == "anthropic" and
             model_family({"model": binding["reviewer_model"]}) == "anthropic" and
             type(binding["review_schema_version"]) is int and binding["review_schema_version"] == 1,
@@ -437,7 +440,10 @@ def committed_archives(repo):
             if path in records:
                 require(encoded(records[path]) == encoded(record), "Archive is immutable across committed snapshots")
                 continue
-            packet_id, result_id = validate_archive(repo, path, record)
+            # Historical commits may have disappeared after squash/rebase/GC/shallow fetch.
+            # Replay identity must depend on the persisted record, not those Git objects.
+            packet_id, result_id = archive_fingerprint(path, record)
+            require(record["binding"]["repository"] == origin_identity(repo), "Invalid archive identity")
             require(packet_id not in packets and result_id not in results, "Duplicate committed archive ID")
             packets.add(packet_id)
             results.add(result_id)
@@ -452,6 +458,7 @@ def reject_committed_duplicate(repo, packet_id):
 
 def verify_archives(repo):
     records = committed_archives(repo)
+    historical = set(records)
     for pid in sorted(PROJECTS):
         root = repo / "projects" / pid / "reviews" / "manual"
         no_symlinks(root)
@@ -463,14 +470,31 @@ def verify_archives(repo):
                 continue
             rel = path.relative_to(repo).as_posix()
             record = strict_json(read_bounded(path))
-            validate_archive(repo, rel, record)
+            archive_fingerprint(rel, record)
             if rel in records:
                 require(encoded(records[rel]) == encoded(record), "Archive record changed after publication")
             records[rel] = record
     packets = [r["packet_id"] for r in records.values()]
     results = [r["result_id"] for r in records.values()]
     require(len(packets) == len(set(packets)) and len(results) == len(set(results)), "Duplicate archive ID")
-    return len(records)
+    report = {"records": len(records), "fully_validated": 0, "structural_only": []}
+    if records:
+        trusted_harness(repo)  # Missing history must not excuse an untrusted current installation.
+    for path, record in sorted(records.items()):
+        unavailable = []
+        for key in ("base_sha", "head_sha", "harness_sha"):
+            root = HARNESS_ROOT if key == "harness_sha" else repo
+            try:
+                git(root, "cat-file", "-e", record["binding"][key] + "^{commit}")
+            except Rejected:
+                unavailable.append(key)
+        if unavailable:
+            require(path in historical, "Uncommitted archive references unavailable Git commits")
+            report["structural_only"].append({"path": path, "unavailable_commits": unavailable})
+        else:
+            validate_archive(repo, path, record)  # Uncommitted/new records never get a structural-only pass.
+            report["fully_validated"] += 1
+    return report
 
 
 def export_packet(repo, pid, repository, base, head, files, experiments, out,
@@ -584,6 +608,7 @@ def import_result(repo, pid, packet_id, result_path):
                   "reviewer_identity_verified": False, "independence_verified": False, "packet_id": packet_id,
                   "result_id": result_id, "binding": binding, "review": review}
         require(len(encoded(record)) + 1 <= MAX_BYTES, "Normalized review exceeds byte bound")
+        validate_archive(repo, archive.relative_to(repo).as_posix(), record)
         # Reserve before publication. A crash fails closed and requires owner inspection, never replay.
         write_new(state / ("used-" + packet_id), {"result_id": result_id})
         write_new(marker, {"packet_id": packet_id})
@@ -628,6 +653,9 @@ def main(argv=None):
             output = import_result(repo, args.project, args.packet_id, args.result)
         else:
             output = verify_archives(repo)
+        if args.command == "verify":
+            print(encoded(output).decode())
+            return 3 if output["structural_only"] else 0
         print(output)
         return 0
     except Rejected as error:

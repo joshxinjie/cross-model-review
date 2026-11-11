@@ -500,7 +500,7 @@ def test_atomic_write_failure_before_link_has_no_final_file(work, monkeypatch):
 def test_verify_checks_archive_integrity_and_immutability(work):
     packet_id, packet = export(work)
     archive = work[0] / import_response(work, packet_id, response(packet))
-    assert M.verify_archives(work[0]) == 1
+    assert M.verify_archives(work[0]) == {"records": 1, "fully_validated": 1, "structural_only": []}
     original = archive.read_bytes()
     archive.write_text('{"truncated":')
     with pytest.raises(M.Rejected): M.verify_archives(work[0])
@@ -517,7 +517,7 @@ def test_distinct_file_selections_allow_identical_legitimate_answers(work):
     assert first_id != second_id
     import_response(work, first_id, response(first))
     import_response(work, second_id, response(second))
-    assert M.verify_archives(work[0]) == 2
+    assert M.verify_archives(work[0]) == {"records": 2, "fully_validated": 2, "structural_only": []}
 
 
 def test_single_checkout_is_rejected(work, monkeypatch):
@@ -608,7 +608,7 @@ def test_verify_cli_does_not_need_a_private_receipt(work, capsys):
     import_response(work, packet_id, response(packet))
     shutil.rmtree(work[0] / ".git/manual-review")
     assert M.main(["verify", "--repo", str(work[0])]) == 0
-    assert capsys.readouterr().out.strip() == "1"
+    assert json.loads(capsys.readouterr().out) == {"records": 1, "fully_validated": 1, "structural_only": []}
 
 
 def test_verify_rejects_duplicate_packet_across_project_archives(work):
@@ -628,3 +628,87 @@ def test_family_skip_identifies_configuration_migration():
     cfg["default_reviewer"] = "fable"
     with pytest.raises(ValueError, match="review/config.yaml default_reviewer"):
         get_reviewer(cfg)
+
+
+def squash_and_prune_reviewed_head(work):
+    """Keep a real nonempty archive while making its reviewed commit unreachable."""
+    repo, base, reviewed_head, tmp = work
+    packet_id, packet = export(work)
+    archive = import_response(work, packet_id, response(packet, [finding()]))
+    git(repo, "reset", "--soft", base)
+    squashed = commit(repo)  # source + archive, parent is base rather than reviewed_head
+    git(repo, "update-ref", M.TRUSTED_REF, squashed)
+    current = (repo, base, squashed, tmp)
+    pending_id, pending = export(current, out=tmp / "pending.json")
+    git(repo, "reflog", "expire", "--expire=now", "--all")
+    git(repo, "gc", "--prune=now")
+    missing = subprocess.run(["git", "-C", str(repo), "cat-file", "-e", reviewed_head + "^{commit}"],
+                             capture_output=True)
+    assert missing.returncode != 0, "regression must remove the actual reviewed Git object"
+    assert json.loads((repo / archive).read_text())["review"]["findings"]
+    return current, archive, pending_id, pending
+
+
+@pytest.mark.parametrize("operation", ["export", "import", "verify"])
+def test_pruned_reviewed_head_does_not_block_unrelated_reviews(work, operation, capsys):
+    current, archive, pending_id, pending = squash_and_prune_reviewed_head(work)
+    if operation == "export":
+        exported_id, _ = export(current, out=current[3] / "after-prune.json")
+        assert exported_id == pending_id
+    elif operation == "import":
+        imported = import_response(current, pending_id, response(pending))
+        assert (current[0] / imported).is_file()
+        report = M.verify_archives(current[0])
+        assert report["records"] == 2 and report["fully_validated"] == 1
+        assert report["structural_only"] == [{"path": archive, "unavailable_commits": ["head_sha"]}]
+    else:
+        report = M.verify_archives(current[0])
+        assert report == {"records": 1, "fully_validated": 0,
+                          "structural_only": [{"path": archive, "unavailable_commits": ["head_sha"]}]}
+        assert M.main(["verify", "--repo", str(current[0])]) == 3
+        assert json.loads(capsys.readouterr().out) == report
+
+
+@pytest.mark.parametrize("field,value", [("head_sha", "not-a-sha"), ("harness_sha", "not-a-sha"),
+                                          ("repository", "example/wrong")])
+def test_missing_history_does_not_excuse_malformed_archive_identity(work, field, value):
+    current, archive, pending_id, _ = squash_and_prune_reviewed_head(work)
+    repo = current[0]
+    path = repo / archive
+    record = json.loads(path.read_text())
+    record["binding"][field] = value
+    record["result_id"] = M.review_result_id(record["packet_id"], record["binding"], record["review"])
+    path.write_text(json.dumps(record))
+    git(repo, "update-ref", M.TRUSTED_REF, commit(repo))
+    with pytest.raises(M.Rejected, match="identity"):
+        M.reject_committed_duplicate(repo, pending_id)
+    with pytest.raises(M.Rejected, match="identity"):
+        M.verify_archives(repo)
+
+
+def test_only_new_import_gets_full_validation_in_replay_path(work, monkeypatch):
+    current, archive, pending_id, pending = squash_and_prune_reviewed_head(work)
+    historical_id = json.loads((current[0] / archive).read_text())["packet_id"]
+    validate = M.validate_archive
+    validated = []
+    def new_only(repo, path, record):
+        assert record["packet_id"] != historical_id, "replay lookup must not fully validate history"
+        validated.append(record["packet_id"])
+        return validate(repo, path, record)
+    monkeypatch.setattr(M, "validate_archive", new_only)
+    M.reject_committed_duplicate(current[0], pending_id)
+    with pytest.raises(M.Rejected, match="Duplicate"):
+        M.reject_committed_duplicate(current[0], historical_id)
+    import_response(current, pending_id, response(pending))
+    assert validated == [pending_id]
+
+
+@pytest.mark.parametrize("findings", [[], [finding()]])
+def test_uncommitted_records_cannot_fall_back_to_structural_verification(work, findings):
+    packet_id, packet = export(work)
+    archive = work[0] / import_response(work, packet_id, response(packet, findings))
+    record = json.loads(archive.read_text())
+    record["binding"]["head_sha"] = "f" * 40  # unavailable but not an accepted historical record
+    record["result_id"] = M.review_result_id(packet_id, record["binding"], record["review"])
+    archive.write_text(json.dumps(record))
+    with pytest.raises(M.Rejected): M.verify_archives(work[0])
