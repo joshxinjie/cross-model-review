@@ -1,0 +1,16 @@
+{
+  "seed": 42,
+  "folds": 5,
+  "char_ngram_range": [2, 5],
+  "word_ngram_range": [1, 2],
+  "char_max_features": 100000,
+  "word_max_features": 50000,
+  "C": 1.0,
+  "max_iter": 10000,
+  "labels": [
+    "gpt-5.5", "gpt-5.6-luna", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-6-astra",
+    "gemini-3.1-pro-preview", "gemini-3.6-flash", "gemini-3.7-flash", "gemini-3.8-flash",
+    "claude-fable-5", "claude-opus-4-6", "claude-opus-4-8", "claude-opus-5", "claude-sonnet-5",
+    "qwen3.8-max", "glm-5.3", "glm-5.3-flash", "kimi-k3"
+  ]
+}

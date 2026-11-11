@@ -10,7 +10,8 @@ No automatic or scheduled Claude reviews, paid APIs, extra-usage billing or paid
 The prior audit read the official [overview](https://www.kaggle.com/competitions/name-that-llm/overview/abstract),
 [data description](https://www.kaggle.com/competitions/name-that-llm/data) and
 [rules](https://www.kaggle.com/competitions/name-that-llm/rules) on 2026-11-11.
-No Kaggle call is made by this implementation. Rule acceptance, account eligibility,
+The baseline rechecked public official pages before coding; see [recheck](RULES_RECHECK.md).
+No Kaggle execution or submission is made. Rule acceptance, account eligibility,
 team membership and compute access remain unverified; `rules_accepted: false` means
 no verified acceptance is recorded here, not a claim about the owner's account.
 The owner must recheck current rules and personally accept them before participation.
@@ -43,4 +44,5 @@ Use only the `name-that-llm` namespaces from [project.yaml](project.yaml). Recor
 split, balanced accuracy, per-class aggregate recall, input/model versions, seeds and
 offline dependency/model packaging. Pin environment and notebook versions, and validate
 submission schema, full test-ID coverage and nine-hour runtime on the intended compute.
-These are future acceptance checks, not claims of completed validation.
+Synthetic local tests now check grouped validation and submission schema. Actual Kaggle
+runtime and hidden-test execution remain future acceptance checks.

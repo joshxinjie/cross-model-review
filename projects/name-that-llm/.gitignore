@@ -1,0 +1,11 @@
+private/
+build/
+.venv/
+*.csv
+*.parquet
+*.pkl
+*.pickle
+*.joblib
+*.bin
+*.npz
+*.whl

@@ -6,8 +6,8 @@ Claude reviews. Use the shared 15-point budget gate before spending this project
 8-point allocation or owner-assigned contingency.
 
 Select a review after a validation methodology is fixed, an offline submission pipeline
-has evidence, or a material modeling decision changes. These are future milestones,
-not authorization to run a baseline in this PR.
+has evidence, or a material modeling decision changes. The owner has separately authorized baseline implementation and synthetic tests.
+That authorization does not launch or authorize a Claude review.
 
 Ask Claude to check prompt-grouped validation and leakage, balanced accuracy/per-class
 recall, legal/public input provenance, exact label/ID coverage, offline dependency/model

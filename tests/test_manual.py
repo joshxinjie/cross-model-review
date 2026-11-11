@@ -37,7 +37,10 @@ def work(tmp_path, monkeypatch):
     git(repo, "config", "user.email", "test@example.invalid")
     git(repo, "remote", "add", "origin", "https://github.com/example/work.git")
     shutil.copytree(SOURCE / "review_harness", repo / "review_harness", ignore=shutil.ignore_patterns("__pycache__"))
-    shutil.copytree(SOURCE / "projects", repo / "projects")
+    # Copy source fixtures only: project-local environments and private artifacts
+    # must not be replicated into every synthetic repository.
+    shutil.copytree(SOURCE / "projects", repo / "projects",
+                    ignore=shutil.ignore_patterns("private", ".venv", "build", "__pycache__", ".pytest_cache"))
     (repo / ".gitignore").write_text("__pycache__/\nprojects/*/private/\n")
     (repo / PATH).write_text("value = 1\n")
     history = repo / f"projects/{PID}/reviews/decisions.md"
