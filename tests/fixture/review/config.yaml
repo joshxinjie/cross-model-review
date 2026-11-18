@@ -61,11 +61,22 @@ reviewers:
   # login: two projects sharing one would invalidate each other's refresh token.
   gpt:
     provider: codex
-    model: gpt-6.1-sol
+    model: gpt-6.2-sol
     reasoning_effort: high
     cli_version: 0.164.0          # keep in step with the workflows' codex-version input
     secret: CODEX_AUTH_JSON
     enabled: true
+  # Reserved opt-in for difficult reviews; disabled until the pinned CLI's context bounds are verified.
+  # See docs/release-notes.md: do not enable against the 400000-token project pack unchanged.
+  # Once validated, `/review gpt-astra` replaces the normal reviewer for an explicitly requested run.
+  # Never select automatically, schedule as an extra review, or use as a failure fallback.
+  gpt-astra:
+    provider: codex
+    model: gpt-6.2-astra
+    reasoning_effort: high
+    cli_version: 0.164.0
+    secret: CODEX_AUTH_JSON
+    enabled: false
   gemini:                         # not usable on a subscription in CI as of 2026-10
     provider: google
     model: null
