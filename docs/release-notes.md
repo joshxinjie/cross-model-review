@@ -50,9 +50,11 @@ These API specifications do not establish subscription CLI defaults or availabil
 
 ### Consumer rollout (separate project changes)
 
-This changes templates, not any existing consumer's trusted-main configuration. After
-this harness change is reviewed and merged, each project's owner should prepare its
-own configuration PR and offline validation:
+This changes templates, not any existing consumer's trusted-main configuration.
+The harness implementation (`review_harness/`) and workflows are unchanged by this
+model update, so a config-only reviewer change needs no harness-pin migration and
+does not depend on merging or repinning this template change. Each project's owner
+should prepare its own configuration PR and offline validation:
 
 - **Dalio:** inspect its trusted-main `review/config.yaml`, reviewer/author routing,
   installed CLI pin and review ownership. Change only the normal GPT reviewer to Sol;
@@ -64,12 +66,26 @@ own configuration PR and offline validation:
 
 For each project, verify cross-family routing, subscription setup already present,
 unchanged historical attribution, workflow compatibility and dry-run prompt sizes.
-A new harness SHA alone does not change the configured reviewer model. If a harness
-update is needed, change `uses:` and `harness-ref` to the same reviewed full SHA in
-that project's own PR; keep it separate from unrelated migrations. Config must land
-on trusted main before subsequent runs use it. Roll back by restoring that project's
-prior model/config and, if changed, both harness pins. No extra review runs are needed
-for rollout; observe the next ordinarily authorized run. Keep Astra disabled unless
+A new harness SHA alone does not change the configured reviewer model. Config must
+land on trusted main before subsequent runs use it. Each consumer PR should name its
+one-line rollback: restore `reviewers.gpt.model: gpt-6.1-sol`, the prior known-good
+reviewer, leaving the response-author model and harness refs unchanged.
+
+Live GPT-6.2 Sol access through CLI 0.164.0 and each project's intended subscription
+remains unverified by this patch. After an owner-authorized switch, watch the first
+ordinarily authorized run: it is the first live compatibility test, and a model
+resolution failure still consumes runner time. Restore the known-good reviewer if
+the new model cannot run; do not substitute another model, effort or paid provider
+silently. This documentation change requests no dedicated test or extra review run.
+
+If a separate, owner-approved harness migration is needed, update **all four refs**
+to the same reviewed full SHA: `uses:` and `harness-ref` in both
+`.github/workflows/review.yml` and `.github/workflows/respond.yml`. A rollback of
+that separate migration must restore all four refs together to the prior reviewed
+full SHA, along with any configuration changes required by that migration. Do not
+move these refs for the config-only model change described above.
+
+Keep Astra disabled unless
 its context blocker is resolved and the owner explicitly opts in for a particular run.
 CRC uses a separate native review integration and needs its own assessment; these
 harness template changes do not migrate it. No consumer or publication gate is changed
