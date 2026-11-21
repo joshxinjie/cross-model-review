@@ -246,13 +246,39 @@ def test_post_falls_back_when_inline_positions_rejected():
 # ---- config and provider --------------------------------------------------------------------------------------------
 
 def test_get_reviewer_guards():
-    assert get_reviewer(CFG)["model"] == "gpt-6.1-sol"
+    assert get_reviewer(CFG)["model"] == "gpt-6.2-sol"
     with pytest.raises(ValueError, match="disabled"):
         get_reviewer(CFG, "gemini")
     bad = copy.deepcopy(CFG)
     bad["reviewers"]["fable"]["model"] = bad["authors"]["claude"]["model"]
     with pytest.raises(ValueError, match="built this work"):
         get_reviewer(bad, "fable")
+
+
+def test_astra_is_blocked_pending_context_validation():
+    assert CFG["authors"]["codex"]["model"] == "gpt-6.1-sol"  # author is a separate role
+    assert get_reviewer(CFG)["name"] == "gpt"
+    astra = CFG["reviewers"]["gpt-astra"]
+    assert astra["model"] == "gpt-6.2-astra" and astra["enabled"] is False
+    assert astra["reasoning_effort"] == CFG["reviewers"]["gpt"]["reasoning_effort"] == "high"
+    assert astra["secret"] == CFG["reviewers"]["gpt"]["secret"] == "CODEX_AUTH_JSON"
+    assert astra["cli_version"] == CFG["reviewers"]["gpt"]["cli_version"]
+    with pytest.raises(ValueError, match="disabled"):
+        get_reviewer(CFG, "gpt-astra")
+    out = G.pr_target(CFG, pr_json(), "gpt-astra", [], TODAY)
+    assert out["run"] == "false" and "disabled" in out["message"]
+    assert G.parse_command("/review gpt-astra") == (True, "gpt-astra")
+
+
+@pytest.mark.parametrize("name", ["gpt", "gpt-astra"])
+def test_gpt62_reviewers_cannot_review_codex_authored_work(name):
+    cfg = copy.deepcopy(CFG)
+    cfg["reviewers"][name]["enabled"] = True  # even after a future explicit Astra opt-in
+    assert get_reviewer(cfg, name)["name"] == name  # allowed against the default Claude author
+    with pytest.raises(ValueError, match="different model family"):
+        get_reviewer(cfg, name, cfg["authors"]["codex"])
+    out = G.pr_target(cfg, pr_json(ref="codex/add-x"), name, [], TODAY)
+    assert out["run"] == "false" and "different model family" in out["message"]
 
 
 def test_anthropic_adapter_parses_and_retries(monkeypatch):
@@ -947,11 +973,12 @@ def test_strict_schema_requires_every_field_and_drops_unsupported_keywords():
     assert CX.strip_nulls({"a": None, "b": [{"c": None, "d": 1}]}) == {"b": [{"d": 1}]}
 
 
-def test_codex_command_is_sandboxed_offline_and_never_asks():
-    cmd = CX.build_command("codex", "gpt-6.1-sol", "high", "/s.json", "/o.json", "/w")
+@pytest.mark.parametrize("model", ["gpt-6.2-sol", "gpt-6.2-astra"])
+def test_codex_command_is_sandboxed_offline_and_never_asks(model):
+    cmd = CX.build_command("codex", model, "high", "/s.json", "/o.json", "/w")
     assert cmd[:2] == ["codex", "exec"] and cmd[-1] == "-"
     assert cmd[cmd.index("-s") + 1] == "workspace-write" and "sandbox_workspace_write.network_access=false" in cmd
-    assert cmd[cmd.index("-m") + 1] == "gpt-6.1-sol" and cmd[cmd.index("-C") + 1] == "/w"
+    assert cmd[cmd.index("-m") + 1] == model and cmd[cmd.index("-C") + 1] == "/w"
     assert 'approval_policy="never"' in cmd and 'model_reasoning_effort="high"' in cmd and "--ephemeral" in cmd
     assert "--dangerously-bypass-approvals-and-sandbox" not in cmd and "danger-full-access" not in cmd
     assert "project_doc_max_bytes=0" in cmd                       # PR87-2-F1: AGENTS.md in the PR is not read
@@ -1013,7 +1040,7 @@ def test_codex_failures_are_explained_and_login_kept(tmp_path):
 
 def test_gpt_reviewer_config_and_workflow_agree():
     gpt = get_reviewer(CFG, "gpt")
-    assert gpt["provider"] == "codex" and gpt["secret"] == "CODEX_AUTH_JSON" and gpt["model"] == "gpt-6.1-sol"
+    assert gpt["provider"] == "codex" and gpt["secret"] == "CODEX_AUTH_JSON" and gpt["model"] == "gpt-6.2-sol"
     assert G.pr_target(CFG, pr_json(), "gpt", [], TODAY)["provider"] == "codex"
     wf = (REPO / ".github" / "workflows" / "review.yml").read_text()
     assert '"@openai/codex@${{ inputs.codex-version }}"' in wf

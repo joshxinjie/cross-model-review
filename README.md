@@ -24,6 +24,13 @@ Each PR's author is found from its branch name. The defaults (all set in your `r
 
 A reviewer from the same model family as the PR's author is refused, even when model IDs or provider aliases differ. Unknown or conflicting families fail closed. Project reviews use `default_author` for this check; they are not independent of every contributor.
 
+The `gpt` reviewer in the template uses GPT-6.2 Sol at high reasoning effort. The Codex author
+used by `/respond` remains separately pinned to GPT-6.1 Sol. A reserved `gpt-astra` reviewer
+is disabled pending validation of the pinned CLI's context bounds; see the
+[GPT-6.2 migration notes](docs/release-notes.md#gpt-62-reviewer-template-migration).
+It is intended only for an explicitly requested difficult review in place of the normal reviewer,
+with no automatic escalation or additional routine review.
+
 ## Add it to a repo
 
 The harness reads a repo's settings from its default branch, so land them in two PRs: first the settings files
